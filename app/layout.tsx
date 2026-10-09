@@ -32,6 +32,8 @@ export default function RootLayout({ children }: LayoutProps<"/">) {
       className={`${display.variable} ${body.variable} ${geistMono.variable} h-full antialiased`}
       // next-themes sets the theme class before React hydrates.
       suppressHydrationWarning
+      // We use smooth scrolling for in-page links; Next.js turns it off during route changes.
+      data-scroll-behavior="smooth"
     >
       <body className="min-h-full flex flex-col">
         <ThemeProvider>{children}</ThemeProvider>
