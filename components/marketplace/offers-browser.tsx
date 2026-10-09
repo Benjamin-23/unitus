@@ -17,7 +17,7 @@ import {
 } from "@/components/ui/dialog";
 import { Separator } from "@/components/ui/separator";
 import { Switch } from "@/components/ui/switch";
-import { PayPalButton } from "@/components/auth/paypal-button";
+import { PayPalPayButton, type CaptureResult } from "@/components/paypal/paypal-pay-button";
 import { money } from "@/lib/chama";
 import { affordability, discountPercent, rankForPayout, type Affordability, type Offer, type OfferCategory } from "@/lib/marketplace";
 import { MERCHANTS, OFFERS } from "@/lib/marketplace-data";
@@ -47,13 +47,13 @@ function FitBadge({ fit }: { fit: Affordability }) {
 }
 
 function BuyDialog({ offer, fit }: { offer: Offer; fit: Affordability }) {
-  const [state, setState] = useState<"idle" | "paying" | "done">("idle");
+  const [receipt, setReceipt] = useState<CaptureResult | null>(null);
   const merchant = MERCHANTS.find((m) => m.id === offer.merchantId)!;
   // Items with instalments take the deposit now, even when it's more than the payout (the member tops up).
   const plan = fit.kind !== "covered" ? offer.instalments : undefined;
   const dueNow = plan ? plan.deposit : offer.price;
   return (
-    <Dialog onOpenChange={(open) => !open && setState("idle")}>
+    <Dialog onOpenChange={(open) => !open && setReceipt(null)}>
       <DialogTrigger render={<Button className="flex-1" variant={fit.kind === "out-of-reach" ? "outline" : "default"} />}>
         {plan ? "Pay deposit" : "Buy now"}
       </DialogTrigger>
@@ -64,11 +64,12 @@ function BuyDialog({ offer, fit }: { offer: Offer; fit: Affordability }) {
             Sold and delivered by {merchant.name}. You pay with your own PayPal; money never comes out of the chama account.
           </DialogDescription>
         </DialogHeader>
-        {state === "done" ? (
+        {receipt ? (
           <div className="flex flex-col items-center gap-3 py-6 text-center">
             <BadgeCheckIcon className="size-10 text-primary" />
-            <p className="font-heading text-lg font-semibold">Order placed</p>
+            <p className="font-heading text-lg font-semibold">Paid {money(Number(receipt.amount ?? dueNow))}</p>
             <p className="text-sm text-muted-foreground">{merchant.name} will contact you to arrange delivery.</p>
+            {receipt.captureId && <p className="font-mono text-xs text-muted-foreground">PayPal ref {receipt.captureId}</p>}
           </div>
         ) : (
           <div className="flex flex-col gap-4">
@@ -94,21 +95,11 @@ function BuyDialog({ offer, fit }: { offer: Offer; fit: Affordability }) {
                 <span className="font-heading text-lg">{money(dueNow)}</span>
               </div>
             </div>
-            <PayPalButton
-              loading={state === "paying"}
-              onClick={async () => {
-                setState("paying");
-                // TODO(backend): create a PayPal order payable to the merchant, with Unitus' referral fee.
-                await new Promise((r) => setTimeout(r, 1200));
-                setState("done");
-              }}
-            >
-              Pay {money(dueNow)} with PayPal
-            </PayPalButton>
+            <PayPalPayButton purpose={{ purpose: "offer", offerId: offer.id }} onCaptured={setReceipt} />
           </div>
         )}
         <DialogFooter>
-          <DialogClose render={<Button variant="outline" />}>{state === "done" ? "Close" : "Cancel"}</DialogClose>
+          <DialogClose render={<Button variant="outline" />}>{receipt ? "Close" : "Cancel"}</DialogClose>
         </DialogFooter>
       </DialogContent>
     </Dialog>
@@ -176,8 +167,17 @@ export function OffersBrowser({ payout, hasWon }: { payout: number; hasWon: bool
               <TrophyIcon className="size-6" />
             </div>
             <div>
-              <p className="text-sm text-band-foreground/75">{hasWon ? "Your payout this cycle" : "When you win the merry-go-round"}</p>
-              <p className="font-heading text-3xl font-semibold">{money(payout)}</p>
+              {payout > 0 ? (
+                <>
+                  <p className="text-sm text-band-foreground/75">{hasWon ? "Your payout this cycle" : "When you win the merry-go-round"}</p>
+                  <p className="font-heading text-3xl font-semibold">{money(payout)}</p>
+                </>
+              ) : (
+                <>
+                  <p className="text-sm text-band-foreground/75">Not in a chama yet</p>
+                  <p className="font-heading text-xl font-semibold">Join one to see what your payout covers</p>
+                </>
+              )}
             </div>
           </div>
           <p className="max-w-md text-sm text-band-foreground/80">

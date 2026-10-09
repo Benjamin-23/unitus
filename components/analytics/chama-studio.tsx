@@ -6,51 +6,47 @@ import type { AgReportState } from "ag-studio";
 import { AgStudio, AgStudioProvider } from "ag-studio-react";
 import { PencilRulerIcon, EyeIcon, RotateCcwIcon } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import { MEMBERS, MONTHLY } from "@/lib/mock-data";
 import { createUnitusStudioTheme } from "./studio-theme";
 
 const LICENSE_KEY = process.env.NEXT_PUBLIC_AG_STUDIO_LICENSE_KEY;
 
 const usd = { format: new Intl.NumberFormat("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 0 }) };
 
-const data = {
-  sources: [
-    {
-      id: "monthly",
-      name: "Monthly totals",
-      data: MONTHLY,
-      fields: [
-        { id: "month", name: "Month", format: "textFormat" as const },
-        { id: "contributions", name: "Contributions", format: "currencyFormat" as const, formatOptions: usd },
-        { id: "savings", name: "Savings", format: "currencyFormat" as const, formatOptions: usd },
-        { id: "loanRepayments", name: "Loan repayments", format: "currencyFormat" as const, formatOptions: usd },
-        { id: "loansIssued", name: "Loans issued", format: "currencyFormat" as const, formatOptions: usd },
-        { id: "payout", name: "Merry-go-round payout", format: "currencyFormat" as const, formatOptions: usd },
-        { id: "winner", name: "Winner", format: "textFormat" as const },
-      ],
-    },
-    {
-      id: "members",
-      name: "Members",
-      data: MEMBERS.map((m) => ({
-        name: m.name,
-        country: m.country.replace(/^\S+\s/, ""),
-        savings: m.savings,
-        loanBalance: m.loanBalance,
-        october: m.octoberStatus,
-        payout: m.payoutMonth ?? "Still in the draw",
-      })),
-      fields: [
-        { id: "name", name: "Member", format: "textFormat" as const },
-        { id: "country", name: "Country", format: "textFormat" as const },
-        { id: "savings", name: "Savings", format: "currencyFormat" as const, formatOptions: usd },
-        { id: "loanBalance", name: "Loan balance", format: "currencyFormat" as const, formatOptions: usd },
-        { id: "october", name: "October status", format: "textFormat" as const },
-        { id: "payout", name: "Payout month", format: "textFormat" as const },
-      ],
-    },
-  ],
+/** Real chama data, prepared on the server (see app/dashboard/analytics/page.tsx). */
+export type StudioData = {
+  monthly: { month: string; contributions: number; savings: number; joiningFees: number }[];
+  members: { name: string; feePaid: string; months: number; contributed: number; savings: number }[];
 };
+
+function buildSources({ monthly, members }: StudioData) {
+  return {
+    sources: [
+      {
+        id: "monthly",
+        name: "Monthly totals",
+        data: monthly,
+        fields: [
+          { id: "month", name: "Month", format: "textFormat" as const },
+          { id: "contributions", name: "Contributions", format: "currencyFormat" as const, formatOptions: usd },
+          { id: "savings", name: "Savings", format: "currencyFormat" as const, formatOptions: usd },
+          { id: "joiningFees", name: "Joining fees", format: "currencyFormat" as const, formatOptions: usd },
+        ],
+      },
+      {
+        id: "members",
+        name: "Members",
+        data: members,
+        fields: [
+          { id: "name", name: "Member", format: "textFormat" as const },
+          { id: "feePaid", name: "Joining fee", format: "textFormat" as const },
+          { id: "months", name: "Months paid", format: "integerFormat" as const },
+          { id: "contributed", name: "Contributed", format: "currencyFormat" as const, formatOptions: usd },
+          { id: "savings", name: "Savings", format: "currencyFormat" as const, formatOptions: usd },
+        ],
+      },
+    ],
+  };
+}
 
 const title = (text: string) => ({ title: { enabled: true, text } });
 const ref = (id: string, aggregation?: "sum" | "count") => ({ id, ...(aggregation ? { aggregation } : {}) });
@@ -63,40 +59,40 @@ const INITIAL_STATE = {
       id: "overview",
       widgets: {
         kpiSavings: { type: "value", dataMapping: { value: [ref("members.savings", "sum")] }, format: title("Savings held") },
-        kpiLoans: { type: "value", dataMapping: { value: [ref("members.loanBalance", "sum")] }, format: title("Loans outstanding") },
-        kpiPaidOut: { type: "value", dataMapping: { value: [ref("monthly.payout", "sum")] }, format: title("Paid out to winners") },
-        kpiCollected: { type: "value", dataMapping: { value: [ref("monthly.contributions", "sum")] }, format: title("Collected") },
+        kpiCollected: { type: "value", dataMapping: { value: [ref("monthly.contributions", "sum")] }, format: title("Contributions") },
+        kpiFees: { type: "value", dataMapping: { value: [ref("monthly.joiningFees", "sum")] }, format: title("Joining fees") },
+        kpiMembers: { type: "value", dataMapping: { value: [ref("members.name", "count")] }, format: title("Members") },
         monthlyChart: {
           type: "column-chart-stacked",
           dataMapping: {
             categoryKey: [ref("monthly.month")],
-            valueKey: [ref("monthly.contributions", "sum"), ref("monthly.savings", "sum"), ref("monthly.loanRepayments", "sum")],
+            valueKey: [ref("monthly.contributions", "sum"), ref("monthly.savings", "sum"), ref("monthly.joiningFees", "sum")],
           },
           format: title("Money in, by month"),
         },
-        countryChart: {
+        memberShare: {
           type: "donut-chart",
-          dataMapping: { categoryKey: [ref("members.country")], valueKey: [ref("members.savings", "sum")] },
-          format: title("Savings by country"),
+          dataMapping: { categoryKey: [ref("members.name")], valueKey: [ref("members.contributed", "sum")] },
+          format: title("Contributions by member"),
         },
         memberChart: {
           type: "bar-chart-grouped",
-          dataMapping: { categoryKey: [ref("members.name")], valueKey: [ref("members.savings", "sum"), ref("members.loanBalance", "sum")] },
-          format: title("Savings and loans per member"),
+          dataMapping: { categoryKey: [ref("members.name")], valueKey: [ref("members.contributed", "sum"), ref("members.savings", "sum")] },
+          format: title("Contributed and saved per member"),
         },
         memberGrid: {
           type: "grid",
-          dataMapping: { cols: [ref("members.name"), ref("members.country"), ref("members.october"), ref("members.payout"), ref("members.savings"), ref("members.loanBalance")] },
+          dataMapping: { cols: [ref("members.name"), ref("members.feePaid"), ref("members.months"), ref("members.contributed"), ref("members.savings")] },
           format: title("Members"),
         },
       },
       widgetLayout: {
         kpiSavings: { xTrack: 0, yTrack: 0, xSpan: 6, ySpan: 7 },
-        kpiLoans: { xTrack: 6, yTrack: 0, xSpan: 6, ySpan: 7 },
-        kpiPaidOut: { xTrack: 12, yTrack: 0, xSpan: 6, ySpan: 7 },
-        kpiCollected: { xTrack: 18, yTrack: 0, xSpan: 6, ySpan: 7 },
+        kpiCollected: { xTrack: 6, yTrack: 0, xSpan: 6, ySpan: 7 },
+        kpiFees: { xTrack: 12, yTrack: 0, xSpan: 6, ySpan: 7 },
+        kpiMembers: { xTrack: 18, yTrack: 0, xSpan: 6, ySpan: 7 },
         monthlyChart: { xTrack: 0, yTrack: 7, xSpan: 15, ySpan: 22 },
-        countryChart: { xTrack: 15, yTrack: 7, xSpan: 9, ySpan: 22 },
+        memberShare: { xTrack: 15, yTrack: 7, xSpan: 9, ySpan: 22 },
         memberChart: { xTrack: 0, yTrack: 29, xSpan: 11, ySpan: 26 },
         memberGrid: { xTrack: 11, yTrack: 29, xSpan: 13, ySpan: 26 },
       },
@@ -104,7 +100,8 @@ const INITIAL_STATE = {
   ],
 } as unknown as AgReportState;
 
-export function ChamaStudio() {
+export function ChamaStudio({ data: studioData }: { data: StudioData }) {
+  const data = useMemo(() => buildSources(studioData), [studioData]);
   const [mode, setMode] = useState<"view" | "edit">("view");
   const [resetKey, setResetKey] = useState(0);
   // next/font generates the font family names; read them so Studio matches the page.

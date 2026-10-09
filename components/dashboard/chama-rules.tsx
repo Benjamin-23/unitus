@@ -15,10 +15,10 @@ import {
   DialogTrigger,
 } from "@/components/ui/dialog";
 import { AUTOMATIC_PAYOUTS, deletionChecklist, money, ordinal, type GroupSnapshot } from "@/lib/chama";
-import { DEMO_GROUP } from "@/lib/mock-data";
+import type { ChamaRow } from "@/lib/chamas";
 import { cn } from "@/lib/utils";
 
-function DeleteChama({ snapshot }: { snapshot: GroupSnapshot }) {
+function DeleteChama({ snapshot, name }: { snapshot: GroupSnapshot; name: string }) {
   const { items, canDelete } = deletionChecklist(snapshot);
   return (
     <Dialog>
@@ -27,7 +27,7 @@ function DeleteChama({ snapshot }: { snapshot: GroupSnapshot }) {
       </DialogTrigger>
       <DialogContent className="sm:max-w-md">
         <DialogHeader>
-          <DialogTitle className="font-heading text-xl">Delete {DEMO_GROUP.name}?</DialogTitle>
+          <DialogTitle className="font-heading text-xl">Delete {name}?</DialogTitle>
           <DialogDescription>
             A chama can only be deleted once it&apos;s clean for everyone, so nobody is left owed or owing.
           </DialogDescription>
@@ -58,15 +58,32 @@ function DeleteChama({ snapshot }: { snapshot: GroupSnapshot }) {
   );
 }
 
-export function ChamaRules({ snapshot, accountBalance }: { snapshot: GroupSnapshot; accountBalance: number }) {
-  const g = DEMO_GROUP;
+export function ChamaRules({
+  chama,
+  cycle,
+  snapshot,
+  accountBalance,
+  canDelete,
+}: {
+  chama: ChamaRow;
+  cycle: { start: string; end: string };
+  snapshot: GroupSnapshot;
+  accountBalance: number;
+  /** Only the chama's admin can ask to delete it. */
+  canDelete: boolean;
+}) {
+  const contribution = Number(chama.monthly_contribution);
+  const month = (m: string) => {
+    const [y, mo] = m.split("-").map(Number);
+    return new Date(Date.UTC(y, mo - 1, 1)).toLocaleDateString("en-GB", { month: "short", year: "numeric", timeZone: "UTC" });
+  };
   const rules: [string, string][] = [
-    ["Merry-go-round", `${money(g.monthlyContribution)} / month → ${money(g.monthlyContribution * g.memberCount)} payout`],
-    ["Savings", `${money(g.monthlySavings)} / month, shared out ${g.shareOut === "year-end" ? "at year end" : "mid-year"}`],
-    ["Joining fee", `${money(g.joiningFee)}, locked until a member leaves`],
-    ["Loans", `Up to ${g.loanMultiplier}× savings at ${g.loanInterestRate}% flat`],
-    ["Auto-deduction", `${ordinal(g.deductionDay)} of each month`],
-    ["Cycle", `${g.memberCount} members · ${g.cycle.startMonth} – ${g.cycle.endMonth}`],
+    ["Merry-go-round", `${money(contribution)} / month → ${money(contribution * chama.member_limit)} payout`],
+    ["Savings", `${money(Number(chama.monthly_savings))} / month, shared out ${chama.share_out === "year-end" ? "at year end" : "mid-year"}`],
+    ["Joining fee", `${money(Number(chama.joining_fee))}, locked until a member leaves`],
+    ["Loans", `Up to ${chama.loan_multiplier}× savings at ${Number(chama.loan_interest_rate)}% flat`],
+    ["Auto-deduction", `${ordinal(chama.deduction_day)} of each month`],
+    ["Cycle", `${chama.member_limit} members · ${month(cycle.start)} – ${month(cycle.end)}`],
   ];
 
   return (
@@ -95,7 +112,7 @@ export function ChamaRules({ snapshot, accountBalance }: { snapshot: GroupSnapsh
 
       <Card className="rounded-3xl">
         <CardHeader>
-          <CardDescription>Chama PayPal account</CardDescription>
+          <CardDescription>Chama balance (held in the Unitus PayPal pool)</CardDescription>
           <CardTitle className="font-heading text-3xl">{money(accountBalance)}</CardTitle>
         </CardHeader>
         <CardContent className="flex flex-col gap-4 text-sm">
@@ -112,9 +129,11 @@ export function ChamaRules({ snapshot, accountBalance }: { snapshot: GroupSnapsh
               </li>
             ))}
           </ul>
-          <div className="flex justify-end border-t pt-3">
-            <DeleteChama snapshot={snapshot} />
-          </div>
+          {canDelete && (
+            <div className="flex justify-end border-t pt-3">
+              <DeleteChama snapshot={snapshot} name={chama.name} />
+            </div>
+          )}
         </CardContent>
       </Card>
     </div>
