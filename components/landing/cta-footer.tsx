@@ -46,11 +46,13 @@ export function Cta() {
 const FOOTER_LINKS = {
   Product: [
     ["How it works", "#how-it-works"],
-    ["Features", "#features"],
+    ["Tour", "#tour"],
+    ["Offers", "#offers"],
     ["Loans", "#loans"],
     ["FAQ", "#faq"],
   ],
   Company: [
+    ["The idea", "#idea"],
     ["For business", "/business"],
     ["About", "/about"],
     ["Contact", "/contact"],

@@ -17,6 +17,7 @@ const LINKS = [
   { href: "#how-it-works", label: "How it works" },
   { href: "#trust", label: "Safety" },
   { href: "#offers", label: "Offers" },
+  { href: "#idea", label: "The idea" },
   { href: "#faq", label: "FAQ" },
   { href: "/business", label: "For business" },
 ];
