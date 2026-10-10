@@ -7,8 +7,6 @@ import {
   ArrowRightIcon,
   BadgeCheckIcon,
   BanIcon,
-  CheckIcon,
-  CopyIcon,
   Loader2Icon,
   LockIcon,
   ShieldCheckIcon,
@@ -22,7 +20,7 @@ import { Field, FieldContent, FieldDescription, FieldError, FieldGroup, FieldLab
 import { Input } from "@/components/ui/input";
 import { Separator } from "@/components/ui/separator";
 import { Textarea } from "@/components/ui/textarea";
-import { PayPalButton } from "@/components/auth/paypal-button";
+import { ShareInvite } from "./share-invite";
 import { AUTOMATIC_PAYOUTS, money, ordinal, validateRules, type GroupRules } from "@/lib/chama";
 import { cn } from "@/lib/utils";
 
@@ -33,7 +31,7 @@ const STEPS: { title: string; fields: FieldKey[] }[] = [
   { title: "Basics", fields: ["name", "memberCount", "startMonth"] },
   { title: "Monthly money", fields: ["monthlyContribution", "monthlySavings", "joiningFee", "deductionDay"] },
   { title: "Savings & loans", fields: ["shareOut", "loanMultiplier", "loanInterestRate"] },
-  { title: "Chama PayPal", fields: [] },
+  { title: "The money", fields: [] },
   { title: "Review & lock", fields: [] },
 ];
 
@@ -52,8 +50,6 @@ const INITIAL: FormState = {
   loanInterestRate: 5,
 };
 
-// TODO(backend): create the group, vault the group's PayPal account and return the real invite code.
-const fakeRequest = (ms = 1100) => new Promise((r) => setTimeout(r, ms));
 
 function monthLabel(ym: string, offset = 0) {
   const [y, m] = ym.split("-").map(Number);
@@ -153,6 +149,7 @@ function Preview({ f }: { f: FormState }) {
           <div>
             <dt className="text-band-foreground/70">Each member pays</dt>
             <dd className="font-semibold">{money(monthly)} / month</dd>
+            <dd className="text-xs text-band-foreground/70">plus PayPal&apos;s fee, paid by the member</dd>
           </div>
           <div>
             <dt className="text-band-foreground/70">Cycle</dt>
@@ -188,15 +185,15 @@ function ReviewRow({ label, value }: { label: string; value: string }) {
   );
 }
 
-export function CreateChamaFlow() {
-  const [f, setF] = useState<FormState>(INITIAL);
+/** `defaultStartMonth` ("YYYY-MM") comes from the server so the default is always next month. */
+export function CreateChamaFlow({ defaultStartMonth }: { defaultStartMonth: string }) {
+  const [f, setF] = useState<FormState>(() => ({ ...INITIAL, startMonth: defaultStartMonth }));
   const [step, setStep] = useState(0);
   const [showErrors, setShowErrors] = useState(false);
   const [busy, setBusy] = useState(false);
-  const [groupPaypal, setGroupPaypal] = useState<string | null>(null);
   const [ack, setAck] = useState({ locked: false, noWithdraw: false, deletion: false });
   const [created, setCreated] = useState<string | null>(null);
-  const [copied, setCopied] = useState(false);
+  const [createError, setCreateError] = useState<string | null>(null);
 
   const set = <K extends FieldKey>(k: K, v: FormState[K]) => setF((prev) => ({ ...prev, [k]: v }));
   const errors = validateRules(f);
@@ -215,11 +212,21 @@ export function CreateChamaFlow() {
 
   async function create() {
     setBusy(true);
-    await fakeRequest(1400);
-    const prefix = f.name.replace(/[^a-z]/gi, "").slice(0, 5).toUpperCase() || "CHAMA";
-    const suffix = Math.random().toString(36).slice(2, 6).toUpperCase();
-    setCreated(`${prefix}-${suffix}`);
-    setBusy(false);
+    setCreateError(null);
+    try {
+      const res = await fetch("/api/chamas", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(f),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error ?? "Couldn't create the chama. Please try again.");
+      setCreated(data.inviteCode);
+    } catch (e) {
+      setCreateError((e as Error).message);
+    } finally {
+      setBusy(false);
+    }
   }
 
   if (created) {
@@ -231,33 +238,24 @@ export function CreateChamaFlow() {
           </div>
           <CardTitle className="mt-2 font-heading text-2xl">{f.name} is live</CardTitle>
           <CardDescription className="text-base">
-            The rules are locked. Share this invite code with your {f.memberCount - 1} other members.
+            The rules are locked. Share this invite code with the {f.memberCount} members.
           </CardDescription>
         </CardHeader>
         <CardContent className="flex flex-col items-center gap-4">
-          <div className="flex items-center gap-2 rounded-2xl border-2 border-dashed border-primary/40 bg-secondary/40 px-5 py-3">
-            <span className="font-mono text-2xl font-semibold tracking-widest">{created}</span>
-            <Button
-              variant="ghost"
-              size="icon"
-              aria-label="Copy invite code"
-              onClick={async () => {
-                await navigator.clipboard?.writeText(created);
-                setCopied(true);
-              }}
-            >
-              {copied ? <CheckIcon className="text-primary" /> : <CopyIcon />}
-            </Button>
-          </div>
+          <ShareInvite code={created} chamaName={f.name} />
           <p className="max-w-sm text-sm text-muted-foreground">
-            Each member signs up, connects PayPal and pays the {money(f.joiningFee)} joining fee. You do too: as the creator, you&apos;re
-            member number one.
+            Each member logs in with their personal PayPal and pays the {money(f.joiningFee)} joining fee.
           </p>
+          <Alert className="max-w-md text-left">
+            <LockIcon />
+            <AlertTitle>This account is the chama&apos;s admin</AlertTitle>
+            <AlertDescription>
+              It manages the chama but can&apos;t join, pay or receive payouts, which keeps admin rights and money apart. To take part
+              yourself, log out and log in with a different personal PayPal account, then join with the invite code.
+            </AlertDescription>
+          </Alert>
         </CardContent>
         <CardFooter className="justify-center gap-2">
-          <Link href="/onboarding" className={buttonVariants({ variant: "outline", size: "lg" })}>
-            Pay my joining fee
-          </Link>
           <Link href="/dashboard" className={buttonVariants({ size: "lg" })}>
             Go to dashboard
           </Link>
@@ -398,15 +396,16 @@ export function CreateChamaFlow() {
           {step === 3 && (
             <>
               <CardHeader>
-                <CardTitle className="font-heading text-2xl">Connect the chama&apos;s PayPal</CardTitle>
+                <CardTitle className="font-heading text-2xl">Where the money goes</CardTitle>
                 <CardDescription className="text-base">
-                  Contributions are collected into this PayPal business account. Unitus pays out from it automatically.
+                  Members pay through PayPal. Every dollar is recorded against this chama, and Unitus pays out automatically under your
+                  rules.
                 </CardDescription>
               </CardHeader>
               <CardContent className="flex flex-col gap-5">
                 <Alert>
                   <BanIcon />
-                  <AlertTitle>Nobody can withdraw from this account through Unitus</AlertTitle>
+                  <AlertTitle>Nobody can withdraw the chama&apos;s money</AlertTitle>
                   <AlertDescription>
                     Not you, not admins, not members. Money only leaves the chama through these automatic payouts:
                     <ul className="mt-2 list-disc pl-5">
@@ -416,25 +415,6 @@ export function CreateChamaFlow() {
                     </ul>
                   </AlertDescription>
                 </Alert>
-                {groupPaypal ? (
-                  <Alert className="border-primary/30 bg-secondary/60">
-                    <BadgeCheckIcon className="text-primary" />
-                    <AlertTitle>Chama PayPal connected</AlertTitle>
-                    <AlertDescription>{groupPaypal}</AlertDescription>
-                  </Alert>
-                ) : (
-                  <PayPalButton
-                    loading={busy}
-                    onClick={async () => {
-                      setBusy(true);
-                      await fakeRequest();
-                      setGroupPaypal("chama•••@example.com · Business account");
-                      setBusy(false);
-                    }}
-                  >
-                    Connect chama PayPal account
-                  </PayPalButton>
-                )}
               </CardContent>
             </>
           )}
@@ -455,7 +435,7 @@ export function CreateChamaFlow() {
                   <ReviewRow label="Auto-deduction" value={`${ordinal(f.deductionDay)} of each month`} />
                   <ReviewRow label="Share-out" value={f.shareOut === "year-end" ? "Year end" : "Mid-year"} />
                   <ReviewRow label="Loans" value={`Up to ${f.loanMultiplier}× savings at ${f.loanInterestRate}% flat`} />
-                  <ReviewRow label="Chama PayPal" value={groupPaypal ?? "Not connected"} />
+                  <ReviewRow label="Payments" value="Through PayPal · withdrawals disabled" />
                 </div>
 
                 <div className="flex flex-col gap-3">
@@ -494,6 +474,13 @@ export function CreateChamaFlow() {
             </>
           )}
 
+          {createError && (
+            <div className="px-6">
+              <Alert variant="destructive">
+                <AlertDescription>{createError}</AlertDescription>
+              </Alert>
+            </div>
+          )}
           <CardFooter className="justify-between">
             {step > 0 ? (
               <Button variant="ghost" size="lg" onClick={() => setStep((s) => s - 1)} disabled={busy}>
@@ -510,7 +497,7 @@ export function CreateChamaFlow() {
               </Button>
             )}
             {step === 3 && (
-              <Button size="lg" onClick={next} disabled={!groupPaypal}>
+              <Button size="lg" onClick={next}>
                 Review <ArrowRightIcon data-icon="inline-end" />
               </Button>
             )}

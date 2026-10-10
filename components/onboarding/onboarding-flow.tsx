@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import {
@@ -11,7 +11,6 @@ import {
   Loader2Icon,
   LockIcon,
   RefreshCwIcon,
-  ShieldCheckIcon,
   UsersIcon,
 } from "lucide-react";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
@@ -22,15 +21,19 @@ import { Field, FieldContent, FieldDescription, FieldError, FieldLabel } from "@
 import { Input } from "@/components/ui/input";
 import { Separator } from "@/components/ui/separator";
 import { Switch } from "@/components/ui/switch";
-import { PayPalButton, PayPalMark } from "@/components/auth/paypal-button";
-import { money, monthlyDeduction, ordinal } from "@/lib/chama";
-import { DEMO_GROUP, DEMO_USER } from "@/lib/mock-data";
+import { PayPalMark } from "@/components/auth/paypal-button";
+import { PayPalPayButton, type CaptureResult } from "@/components/paypal/paypal-pay-button";
+import { money, ordinal } from "@/lib/chama";
+import type { ChamaPreview } from "@/lib/chamas";
+import { useMe } from "@/lib/auth/use-me";
 import { cn } from "@/lib/utils";
 
-const STEPS = ["Connect PayPal", "Join a chama", "Joining fee", "Auto-deductions"] as const;
+const STEPS = ["PayPal connected", "Join a chama", "Joining fee", "Auto-deductions"] as const;
 
-// TODO(backend): each of these becomes a real call (PayPal vaulting, group lookup, order capture, billing agreement).
-const fakeRequest = (ms = 1100) => new Promise((r) => setTimeout(r, ms));
+function monthLabel(ym: string, offset = 0) {
+  const [y, m] = ym.split("-").map(Number);
+  return new Date(y, m - 1 + offset, 1).toLocaleDateString("en-GB", { month: "short", year: "numeric" });
+}
 
 function Stepper({ current }: { current: number }) {
   return (
@@ -63,107 +66,112 @@ function Row({ label, value, strong }: { label: string; value: string; strong?: 
 
 export function OnboardingFlow() {
   const router = useRouter();
-  const viaPayPal = useSearchParams().get("via") === "paypal";
-  const [step, setStep] = useState(viaPayPal ? 1 : 0);
-  const [busy, setBusy] = useState(false);
-  const [paypalConnected, setPaypalConnected] = useState(viaPayPal);
-  const [code, setCode] = useState("");
+  // Arriving from a share link (/join/CODE) pre-fills the code.
+  const sharedCode = useSearchParams().get("code") ?? "";
+  // Step 0 ("PayPal connected") is done at sign-in: members log in with PayPal.
+  const [step, setStep] = useState(1);
+  const me = useMe();
+  // A shared code is looked up on arrival, so start in the loading state.
+  const [busy, setBusy] = useState(Boolean(sharedCode));
+  const [code, setCode] = useState(sharedCode);
   const [codeError, setCodeError] = useState<string | null>(null);
-  const [groupFound, setGroupFound] = useState(false);
+  const [chama, setChama] = useState<ChamaPreview | null>(null);
   const [agreed, setAgreed] = useState(false);
-  const [feePaid, setFeePaid] = useState(false);
+  const [receipt, setReceipt] = useState<CaptureResult | null>(null);
+  const feePaid = receipt !== null;
   const [autoDebit, setAutoDebit] = useState(true);
   const [reminders, setReminders] = useState(true);
 
-  const group = DEMO_GROUP;
-  const firstDeduction = monthlyDeduction(group, { savings: 0, lockedJoiningFee: 0, loan: null, hasReceivedPayout: false });
+  async function fetchPreview(value: string): Promise<{ chama: ChamaPreview | null; error: string | null }> {
+    try {
+      const res = await fetch(`/api/chamas/lookup?code=${encodeURIComponent(value.trim())}`);
+      const data = await res.json();
+      if (!res.ok) return { chama: null, error: data.error ?? "Something went wrong. Please try again." };
+      return { chama: data.chama, error: null };
+    } catch {
+      return { chama: null, error: "Couldn't reach Unitus. Check your connection and try again." };
+    }
+  }
 
-  async function connectPayPal() {
+  async function lookup(value: string) {
     setBusy(true);
-    await fakeRequest();
-    setPaypalConnected(true);
+    setCodeError(null);
+    const result = await fetchPreview(value);
+    setChama(result.chama);
+    setCodeError(result.error);
     setBusy(false);
   }
 
-  async function findGroup(e: React.FormEvent) {
-    e.preventDefault();
-    setBusy(true);
-    await fakeRequest(700);
-    setBusy(false);
-    if (code.trim().toUpperCase() !== group.inviteCode) {
-      setCodeError(`We couldn't find a chama with that code. Try the demo code ${group.inviteCode}.`);
-      setGroupFound(false);
+  // Look up a shared code straight away.
+  useEffect(() => {
+    if (!sharedCode) return;
+    let cancelled = false;
+    fetchPreview(sharedCode).then((result) => {
+      if (cancelled) return;
+      setChama(result.chama);
+      setCodeError(result.error);
+      setBusy(false);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [sharedCode]);
+
+  async function join() {
+    if (!chama) return;
+    if (chama.you?.role === "admin") return;
+    if (chama.you?.role === "member") {
+      setStep(chama.you.joiningFeePaid ? 3 : 2);
       return;
     }
+    setBusy(true);
     setCodeError(null);
-    setGroupFound(true);
+    try {
+      const res = await fetch("/api/chamas/join", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ code: chama.inviteCode }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error ?? "Couldn't join. Please try again.");
+      setChama({ ...chama, memberCount: chama.memberCount + 1, you: { role: "member", joiningFeePaid: false } });
+      setStep(2);
+    } catch (e) {
+      setCodeError((e as Error).message);
+    } finally {
+      setBusy(false);
+    }
   }
 
-  async function payFee() {
-    setBusy(true);
-    await fakeRequest(1400);
-    setFeePaid(true);
-    setBusy(false);
-  }
+  const cycleEnd = chama ? monthLabel(chama.startMonth, chama.memberLimit - 1) : "";
+  const isAdmin = chama?.you?.role === "admin";
+  const isFull = chama ? !chama.you && (chama.status !== "open" || chama.memberCount >= chama.memberLimit) : false;
+
 
   return (
     <div className="mx-auto flex w-full max-w-xl flex-col gap-8">
       <Stepper current={step} />
 
-      {step === 0 && (
-        <Card className="rounded-3xl">
-          <CardHeader>
-            <CardTitle className="font-heading text-2xl">Connect your PayPal account</CardTitle>
-            <CardDescription className="text-base">
-              Contributions, savings and loan repayments are paid from this account, and your merry-go-round payout lands
-              here too.
-            </CardDescription>
-          </CardHeader>
-          <CardContent className="flex flex-col gap-4">
-            <ul className="flex flex-col gap-3 text-sm">
-              {[
-                "You log in on PayPal's own page. We never see your password.",
-                "You can contribute from any country PayPal supports.",
-                "You can disconnect at any time from your settings.",
-              ].map((t) => (
-                <li key={t} className="flex gap-3">
-                  <ShieldCheckIcon className="mt-0.5 size-4 shrink-0 text-primary" />
-                  {t}
-                </li>
-              ))}
-            </ul>
-            {paypalConnected ? (
-              <Alert className="border-primary/30 bg-secondary/60">
-                <BadgeCheckIcon className="text-primary" />
-                <AlertTitle>PayPal connected</AlertTitle>
-                <AlertDescription>{DEMO_USER.paypalEmail}</AlertDescription>
-              </Alert>
-            ) : (
-              <PayPalButton onClick={connectPayPal} loading={busy}>
-                Connect PayPal
-              </PayPalButton>
-            )}
-          </CardContent>
-          <CardFooter className="justify-end">
-            <Button size="lg" disabled={!paypalConnected} onClick={() => setStep(1)}>
-              Continue <ArrowRightIcon data-icon="inline-end" />
-            </Button>
-          </CardFooter>
-        </Card>
-      )}
-
       {step === 1 && (
         <Card className="rounded-3xl">
           <CardHeader>
             <CardTitle className="font-heading text-2xl">Join your chama</CardTitle>
-            <CardDescription className="text-base">Enter the invite code your group admin shared with you.</CardDescription>
+            <CardDescription className="text-base">
+              {me?.name ? `Welcome, ${me.name.split(" ")[0]}. ` : ""}Enter the invite code your group admin shared with you.
+            </CardDescription>
           </CardHeader>
           <CardContent className="flex flex-col gap-5">
-            <form onSubmit={findGroup} className="flex gap-2">
+            <form
+              onSubmit={(e) => {
+                e.preventDefault();
+                void lookup(code);
+              }}
+              className="flex gap-2"
+            >
               <Input
                 value={code}
                 onChange={(e) => setCode(e.target.value)}
-                placeholder={group.inviteCode}
+                placeholder="K7QM-3XPA"
                 aria-label="Invite code"
                 aria-invalid={!!codeError}
                 className="h-11 font-mono uppercase"
@@ -174,47 +182,74 @@ export function OnboardingFlow() {
             </form>
             {codeError && <FieldError>{codeError}</FieldError>}
 
-            {groupFound && (
+            {chama && (
               <div className="rounded-2xl border bg-secondary/40 p-5">
                 <div className="flex items-center gap-3">
                   <div className="flex size-11 items-center justify-center rounded-xl bg-primary text-primary-foreground">
                     <UsersIcon className="size-5" />
                   </div>
                   <div>
-                    <p className="font-heading text-lg font-semibold">{group.name}</p>
+                    <p className="font-heading text-lg font-semibold">{chama.name}</p>
                     <p className="text-sm text-muted-foreground">
-                      {group.memberCount} members · cycle {group.cycle.startMonth} – {group.cycle.endMonth}
+                      {chama.memberCount} of {chama.memberLimit} members · cycle {monthLabel(chama.startMonth)} – {cycleEnd}
+                      {chama.createdBy && ` · started by ${chama.createdBy}`}
                     </p>
                   </div>
                 </div>
                 <Separator className="my-4" />
-                <p className="mb-1 text-sm font-semibold">The group&apos;s rules</p>
-                <Row label="Joining fee (locked in your savings)" value={money(group.joiningFee)} />
-                <Row label="Merry-go-round contribution" value={`${money(group.monthlyContribution)} / month`} />
-                <Row label="Savings" value={`${money(group.monthlySavings)} / month`} />
-                <Row label="Savings shared out" value={group.shareOut === "year-end" ? "At year end" : "Mid-year"} />
-                <Row label="Loans" value={`Up to ${group.loanMultiplier}× savings at ${group.loanInterestRate}% flat`} />
-                <Row label="Auto-deduction day" value={`${ordinal(group.deductionDay)} of each month`} />
+                {chama.description && <p className="mb-3 text-sm text-muted-foreground">{chama.description}</p>}
+                <p className="mb-1 flex items-center gap-1.5 text-sm font-semibold">
+                  <LockIcon className="size-3.5 text-primary" /> The chama&apos;s rules (locked)
+                </p>
+                <Row label="Joining fee (locked in your savings)" value={money(chama.rules.joiningFee)} />
+                <Row label="Merry-go-round contribution" value={`${money(chama.rules.monthlyContribution)} / month`} />
+                <Row label="Monthly payout to the winner" value={money(chama.rules.monthlyContribution * chama.memberLimit)} />
+                <Row label="Savings" value={`${money(chama.rules.monthlySavings)} / month`} />
+                <Row label="Savings shared out" value={chama.rules.shareOut === "year-end" ? "At year end" : "Mid-year"} />
+                <Row label="Loans" value={`Up to ${chama.rules.loanMultiplier}× savings at ${chama.rules.loanInterestRate}% flat`} />
+                <Row label="Auto-deduction day" value={`${ordinal(chama.rules.deductionDay)} of each month`} />
               </div>
             )}
+            {chama?.you?.role === "member" && (
+              <Alert>
+                <BadgeCheckIcon />
+                <AlertDescription>
+                  You&apos;re already a member of this chama.
+                  {chama.you.joiningFeePaid ? " Your joining fee is paid." : " Next, pay your joining fee."}
+                </AlertDescription>
+              </Alert>
+            )}
+            {isAdmin && (
+              <Alert>
+                <LockIcon />
+                <AlertTitle>You&apos;re signed in with this chama&apos;s admin account</AlertTitle>
+                <AlertDescription>
+                  The admin account manages the chama but can&apos;t join it, pay into it or receive payouts. To take part as a member,
+                  log out and log in with a different personal PayPal account, then use this invite code.
+                </AlertDescription>
+              </Alert>
+            )}
+            {isFull && <FieldError>This chama is full and no longer accepting members.</FieldError>}
           </CardContent>
           <CardFooter className="justify-between">
             <Link href="/groups/new" className="text-sm font-medium text-primary hover:underline">
               Start a new chama instead
             </Link>
-            <Button size="lg" disabled={!groupFound} onClick={() => setStep(2)}>
-              Join this chama <ArrowRightIcon data-icon="inline-end" />
+            <Button size="lg" disabled={!chama || isFull || isAdmin || busy} onClick={join}>
+              {busy && chama ? <Loader2Icon className="animate-spin" /> : null}
+              {chama?.you?.role === "member" ? "Continue" : "Join this chama"} <ArrowRightIcon data-icon="inline-end" />
             </Button>
           </CardFooter>
         </Card>
       )}
 
-      {step === 2 && (
+      {step === 2 && chama && (
         <Card className="rounded-3xl">
           <CardHeader>
             <CardTitle className="font-heading text-2xl">Pay your joining fee</CardTitle>
             <CardDescription className="text-base">
-              A one-time {money(group.joiningFee)} payment confirms your PayPal account works and starts your savings.
+              A one-time {money(chama.rules.joiningFee)} joining fee to {chama.name} confirms your PayPal account works and starts your
+              savings.
             </CardDescription>
           </CardHeader>
           <CardContent className="flex flex-col gap-5">
@@ -237,11 +272,22 @@ export function OnboardingFlow() {
               </div>
             </div>
 
+            <div className="rounded-2xl border px-5 py-3">
+              <Row label="Joining fee (goes to your savings)" value={money(chama.charges.joiningFee.principal)} />
+              <Row label="PayPal processing fee" value={money(chama.charges.joiningFee.fee)} />
+              <Separator className="my-1" />
+              <Row label="You pay" value={money(chama.charges.joiningFee.total)} strong />
+            </div>
+
             {feePaid ? (
               <Alert className="border-primary/30 bg-secondary/60">
                 <BadgeCheckIcon className="text-primary" />
-                <AlertTitle>{money(group.joiningFee)} received. Your PayPal is verified.</AlertTitle>
-                <AlertDescription>It&apos;s now in your locked savings.</AlertDescription>
+                <AlertTitle>{money(Number(receipt.amount ?? chama.rules.joiningFee))} received. Your PayPal is verified.</AlertTitle>
+                <AlertDescription>
+                  It&apos;s now in your locked savings.
+                  {receipt.payerEmail && ` Paid from ${receipt.payerEmail}.`}
+                  {receipt.captureId && <span className="block font-mono text-xs">PayPal ref {receipt.captureId}</span>}
+                </AlertDescription>
               </Alert>
             ) : (
               <>
@@ -250,14 +296,15 @@ export function OnboardingFlow() {
                   <FieldContent>
                     <FieldLabel htmlFor="agree">I understand the joining fee is locked until I leave the chama</FieldLabel>
                     <FieldDescription>
-                      Leaving is only possible once the current cycle ends ({group.cycle.endMonth}). Any loan balance is
+                      Leaving is only possible once the current cycle ends ({cycleEnd}). Any loan balance is
                       deducted from what you withdraw.
                     </FieldDescription>
                   </FieldContent>
                 </Field>
-                <PayPalButton onClick={payFee} loading={busy} disabled={!agreed}>
-                  Pay {money(group.joiningFee)} with PayPal
-                </PayPalButton>
+                <PayPalPayButton purpose={{ purpose: "joining-fee", chamaId: chama.id }} savePayment disabled={!agreed} onCaptured={setReceipt} />
+                <p className="text-xs text-muted-foreground">
+                  Paying also saves your PayPal so your monthly share can be collected automatically.
+                </p>
               </>
             )}
           </CardContent>
@@ -269,12 +316,13 @@ export function OnboardingFlow() {
         </Card>
       )}
 
-      {step === 3 && (
+      {step === 3 && chama && (
         <Card className="rounded-3xl">
           <CardHeader>
             <CardTitle className="font-heading text-2xl">Set up automatic deductions</CardTitle>
             <CardDescription className="text-base">
-              On the {ordinal(group.deductionDay)} of every month, Unitus collects your share from PayPal, so you never miss a draw.
+              On the {ordinal(chama.rules.deductionDay)} of every month, Unitus collects your share from PayPal, so you never miss a
+              draw.
             </CardDescription>
           </CardHeader>
           <CardContent className="flex flex-col gap-5">
@@ -282,12 +330,26 @@ export function OnboardingFlow() {
               <div className="mb-2 flex items-center gap-2 text-sm font-semibold">
                 <CalendarClockIcon className="size-4 text-primary" /> Each month
               </div>
-              <Row label="Merry-go-round contribution" value={money(firstDeduction.contribution)} />
-              <Row label="Savings" value={money(firstDeduction.savings)} />
+              <Row label="Merry-go-round contribution" value={money(chama.rules.monthlyContribution)} />
+              <Row label="Savings" value={money(chama.rules.monthlySavings)} />
+              <Row label="PayPal processing fee" value={money(chama.charges.monthly.fee)} />
               <Row label="Loan repayment" value="Only while you have a loan" />
               <Separator className="my-2" />
-              <Row label="Total from PayPal" value={money(firstDeduction.total)} strong />
+              <Row label="Total from PayPal" value={money(chama.charges.monthly.total)} strong />
             </div>
+
+            {receipt?.paypalSaved || (!receipt && chama.you?.role === "member" && chama.you.joiningFeePaid) ? (
+              <p className="flex items-center gap-2 text-sm text-muted-foreground">
+                <BadgeCheckIcon className="size-4 text-primary" /> Your PayPal was saved when you paid the joining fee.
+              </p>
+            ) : (
+              <Alert>
+                <AlertDescription>
+                  PayPal didn&apos;t save your account for automatic payments. You can still continue, and we&apos;ll ask you to approve each
+                  month instead.
+                </AlertDescription>
+              </Alert>
+            )}
 
             <div className="flex flex-col gap-4">
               <Field orientation="horizontal" className="justify-between rounded-2xl border p-4">
@@ -311,14 +373,10 @@ export function OnboardingFlow() {
           <CardFooter className="justify-end">
             <Button
               size="lg"
-              disabled={!autoDebit || busy}
-              onClick={async () => {
-                setBusy(true);
-                await fakeRequest(800);
-                router.push("/dashboard");
-              }}
+              disabled={!autoDebit}
+              // TODO(backend): save the auto-deduction and reminder preferences.
+              onClick={() => router.push("/dashboard")}
             >
-              {busy && <Loader2Icon className="animate-spin" />}
               Go to my dashboard
             </Button>
           </CardFooter>

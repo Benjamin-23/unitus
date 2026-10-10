@@ -1,14 +1,21 @@
+import { Suspense } from "react";
 import type { Metadata } from "next";
-import { CalendarClockIcon, HandCoinsIcon, LockIcon, PiggyBankIcon, RefreshCwIcon } from "lucide-react";
+import Link from "next/link";
+import { redirect } from "next/navigation";
+import { CalendarClockIcon, CoinsIcon, LockIcon, PiggyBankIcon, PlusIcon, RefreshCwIcon, UsersIcon, WalletIcon } from "lucide-react";
+import { Badge } from "@/components/ui/badge";
+import { buttonVariants } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Progress } from "@/components/ui/progress";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { LedgerGrid, MembersGrid, ScheduleGrid } from "@/components/dashboard/grids";
 import { ChamaRules } from "@/components/dashboard/chama-rules";
 import { LeaveChama } from "@/components/dashboard/leave-chama";
-import { RequestLoan } from "@/components/dashboard/request-loan";
-import { loanBalance, loanLimit, money, monthlyDeduction } from "@/lib/chama";
-import { CHAMA_ACCOUNT_BALANCE, DEMO_ACCOUNT, DEMO_GROUP, DEMO_USER, GROUP_SNAPSHOT, MEMBERS } from "@/lib/mock-data";
+import { MyChamas } from "@/components/dashboard/my-chamas";
+import { RunDeduction } from "@/components/dashboard/run-deduction";
+import { getSession } from "@/lib/auth/session";
+import { money } from "@/lib/chama";
+import { getChamaDashboard, listDashboardChamas, monthName } from "@/lib/dashboard";
 import { cn } from "@/lib/utils";
 
 export const metadata: Metadata = { title: "Dashboard · Unitus" };
@@ -42,92 +49,242 @@ function Stat({
   );
 }
 
-export default function DashboardPage() {
-  const group = DEMO_GROUP;
-  const account = DEMO_ACCOUNT;
-  const deduction = monthlyDeduction(group, account);
-  const { limit, available } = loanLimit(group, account);
-  const balance = loanBalance(account.loan);
-  const paidThisMonth = MEMBERS.filter((m) => m.octoberStatus === "Paid").length;
+const Note = ({ children, className }: { children: React.ReactNode; className?: string }) => (
+  <p className={cn("text-sm text-muted-foreground", className)}>{children}</p>
+);
+
+const fullDate = (d: string) => new Date(`${d}T00:00:00Z`).toLocaleDateString("en-GB", { day: "numeric", month: "short", year: "numeric", timeZone: "UTC" });
+
+async function Dashboard({ searchParams }: { searchParams: PageProps<"/dashboard">["searchParams"] }) {
+  const session = await getSession();
+  if (!session) redirect("/login?next=/dashboard");
+  const params = await searchParams;
+  const selectedId = typeof params.chama === "string" ? params.chama : undefined;
+
+  const chamas = await listDashboardChamas(session.memberId);
+  const firstName = session.name?.split(" ")[0] ?? "there";
+
+  const header = (
+    <div>
+      <p className="text-sm text-muted-foreground">Welcome back,</p>
+      <h1 className="font-heading text-3xl font-semibold tracking-tight">{firstName}</h1>
+    </div>
+  );
+
+  if (chamas.length === 0) {
+    return (
+      <>
+        {header}
+        <Card className="rounded-3xl">
+          <CardContent className="flex flex-col items-center gap-4 py-12 text-center">
+            <UsersIcon className="size-8 text-muted-foreground" />
+            <div>
+              <p className="font-heading text-xl font-semibold">You&apos;re not in a chama yet</p>
+              <Note>Join one with an invite link or code, or start one from a separate PayPal account.</Note>
+            </div>
+            <div className="flex flex-wrap justify-center gap-2">
+              <Link href="/onboarding" className={buttonVariants({ size: "lg" })}>
+                Join with an invite code
+              </Link>
+              <Link href="/groups/new" className={buttonVariants({ variant: "outline", size: "lg" })}>
+                <PlusIcon data-icon="inline-start" /> Start a chama
+              </Link>
+            </div>
+          </CardContent>
+        </Card>
+      </>
+    );
+  }
+
+  const selected = chamas.find((c) => c.id === selectedId) ?? chamas[0];
+  const d = await getChamaDashboard(selected.id, session.memberId);
+  if (!d) redirect("/dashboard");
+
+  const { chama, you, pool, cycle, next, members, period } = d;
+  const isAdmin = d.role === "admin";
+  const started = period >= cycle.start;
+  const paidThisMonth = members.filter((m) => m.paidThisMonth).length;
+  const drawsRemaining = cycle.drawsTotal - cycle.drawsDone;
 
   return (
     <>
+      <div className="flex flex-col justify-between gap-4 sm:flex-row sm:items-end">
+        {header}
+        {!isAdmin && you && (
+          <LeaveChama
+            chamaName={chama.name}
+            savings={you.savings}
+            joiningFee={you.lockedJoiningFee}
+            drawsRemaining={drawsRemaining}
+            cycleEnd={monthName(cycle.end)}
+          />
+        )}
+      </div>
 
-      <main className="mx-auto flex w-full max-w-7xl flex-1 flex-col gap-8 px-4 py-8 sm:px-6">
-        <div className="flex flex-col justify-between gap-4 sm:flex-row sm:items-end">
-          <div>
-            <p className="text-sm text-muted-foreground">Welcome back,</p>
-            <h1 className="font-heading text-3xl font-semibold tracking-tight">{DEMO_USER.name.split(" ")[0]}</h1>
-          </div>
-          <div className="flex gap-2">
-            <RequestLoan />
-            <LeaveChama />
-          </div>
-        </div>
+      <MyChamas />
 
-        <section className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
-          <Stat icon={PiggyBankIcon} label="Your savings" value={money(account.savings + account.lockedJoiningFee)}>
-            <p className="flex items-center gap-1.5 text-sm text-muted-foreground">
-              <LockIcon className="size-3.5" /> {money(account.lockedJoiningFee)} joining fee locked until you leave
-            </p>
-            <p className="text-sm text-muted-foreground">Shared out {group.shareOut === "year-end" ? "at year end" : "mid-year"}</p>
-          </Stat>
+      {chamas.length > 1 && (
+        <nav aria-label="Choose a chama" className="flex flex-wrap gap-2">
+          {chamas.map((c) => (
+            <Link
+              key={c.id}
+              href={`/dashboard?chama=${c.id}`}
+              aria-current={c.id === chama.id ? "page" : undefined}
+              className={cn(buttonVariants({ variant: c.id === chama.id ? "default" : "outline" }), "h-9 rounded-full")}
+            >
+              {c.name}
+              <span className="text-xs opacity-75">{c.role === "admin" ? "Admin" : "Member"}</span>
+            </Link>
+          ))}
+        </nav>
+      )}
 
-          <Stat icon={RefreshCwIcon} label="Merry-go-round" value={`${group.cycle.drawsCompleted} of ${group.memberCount} drawn`}>
-            <Progress value={(group.cycle.drawsCompleted / group.memberCount) * 100} className="[&_[data-slot=progress-track]]:h-2" />
-            <p className="text-sm text-muted-foreground">
-              {account.hasReceivedPayout ? "You've received your payout this cycle." : (
-                <>
-                  <span className="font-medium text-primary">You&apos;re still in the draw.</span> October: {paidThisMonth}/{group.memberCount} paid
-                </>
+      <div className="flex flex-wrap items-center gap-2">
+        <h2 className="font-heading text-2xl font-semibold tracking-tight">{chama.name}</h2>
+        <Badge variant="secondary">{isAdmin ? "You're the admin" : "You're a member"}</Badge>
+        <Badge variant="outline" className="gap-1">
+          <LockIcon className="size-3" /> Rules locked
+        </Badge>
+      </div>
+
+      <section className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
+        {isAdmin ? (
+          <>
+            <Stat icon={UsersIcon} label="Members" value={`${members.length} of ${chama.member_limit}`}>
+              <Progress value={(members.length / chama.member_limit) * 100} className="[&_[data-slot=progress-track]]:h-2" />
+              <Note>{members.filter((m) => m.feePaid).length} have paid the joining fee</Note>
+            </Stat>
+            <Stat icon={WalletIcon} label="Chama balance (net in pool)" value={money(pool.balance)}>
+              <Note>
+                {money(pool.joiningFees)} joining fees · {money(pool.savings)} savings · {money(pool.contributions)} contributions
+              </Note>
+              <Note className="text-xs">
+                Members paid {money(pool.feesCharged)} in PayPal fees on top; PayPal took {money(pool.paypalFees)}.
+              </Note>
+            </Stat>
+            <Stat
+              icon={CalendarClockIcon}
+              label={started ? `${monthName(period)} collection` : "Collections"}
+              value={started ? `${paidThisMonth} of ${members.length} paid` : `From ${monthName(cycle.start)}`}
+            >
+              <Note>{next ? `Next deduction day: ${fullDate(next.date)}` : "This cycle's collections are complete"}</Note>
+            </Stat>
+          </>
+        ) : (
+          <>
+            <Stat icon={PiggyBankIcon} label="Your balance" value={money(you?.balance ?? 0)}>
+              <Note className="flex items-center gap-1.5">
+                <LockIcon className="size-3.5" /> {money(you?.lockedJoiningFee ?? 0)} joining fee, locked until you leave
+              </Note>
+              <Note>
+                {money(you?.savings ?? 0)} savings, shared out {chama.share_out === "year-end" ? "at year end" : "mid-year"}
+              </Note>
+              <Note className="text-xs">PayPal fees you&apos;ve paid on top: {money(you?.feesPaid ?? 0)}</Note>
+            </Stat>
+            <Stat icon={CoinsIcon} label="Contributions paid" value={money(you?.contributed ?? 0)}>
+              <Note>
+                {members.find((m) => m.isYou)?.months ?? 0} months ·{" "}
+                {started ? (you?.paidThisMonth ? `${monthName(period)} paid` : `${monthName(period)} not paid yet`) : `starts ${monthName(cycle.start)}`}
+              </Note>
+              {!you?.feePaid && (
+                <Link href={`/onboarding?code=${chama.invite_code}`} className={cn(buttonVariants({ size: "sm" }), "w-fit")}>
+                  Pay joining fee
+                </Link>
               )}
-            </p>
+            </Stat>
+          </>
+        )}
+
+        <Stat icon={RefreshCwIcon} label="Merry-go-round" value={`${cycle.drawsDone} of ${cycle.drawsTotal} drawn`}>
+          <Progress value={(cycle.drawsDone / cycle.drawsTotal) * 100} className="[&_[data-slot=progress-track]]:h-2" />
+          <Note>
+            {members.length < chama.member_limit
+              ? `Waiting for ${chama.member_limit - members.length} more member${chama.member_limit - members.length === 1 ? "" : "s"} · first draw ${monthName(cycle.start)}`
+              : `First draw ${monthName(cycle.start)} · payout ${money(Number(chama.monthly_contribution) * chama.member_limit)}`}
+          </Note>
+        </Stat>
+
+        {!isAdmin && (
+          <Stat
+            icon={CalendarClockIcon}
+            label="Next auto-deduction"
+            value={next ? money(next.total) : "—"}
+            className="bg-band text-band-foreground [&_[data-slot=card-description]]:text-band-foreground/75"
+          >
+            <p className="text-sm text-band-foreground/80">{next ? `${fullDate(next.date)} from your PayPal` : "No more deductions this cycle"}</p>
+            {next && (
+              <p className="text-xs text-band-foreground/70">
+                {money(next.contribution)} contribution · {money(next.savings)} savings · {money(next.fee)} PayPal fee
+              </p>
+            )}
+            {/* Sandbox testing only: in production a scheduler collects contributions. */}
+            {process.env.PAYPAL_ENVIRONMENT !== "production" && you?.feePaid && <RunDeduction />}
           </Stat>
+        )}
+      </section>
 
-          <Stat icon={HandCoinsIcon} label="Loan balance" value={money(balance)}>
-            <p className="text-sm text-muted-foreground">
-              {money(available)} more available (limit {money(limit)})
-            </p>
-            <p className="text-sm text-muted-foreground">
-              {account.loan ? `${account.loan.instalmentsPaid} of ${account.loan.months} instalments paid` : "No active loan"}
-            </p>
-          </Stat>
+      <ChamaRules
+        chama={chama}
+        cycle={cycle}
+        accountBalance={pool.balance}
+        canDelete={isAdmin}
+        snapshot={{
+          memberCount: members.length,
+          membersPaidOut: cycle.drawsDone,
+          savingsHeld: pool.joiningFees + pool.savings,
+          loansOutstanding: 0,
+          pendingDeductions: started && next ? members.length - paidThisMonth : 0,
+        }}
+      />
 
-          <Stat icon={CalendarClockIcon} label="Next auto-deduction" value={money(deduction.total)} className="bg-band text-band-foreground [&_[data-slot=card-description]]:text-band-foreground/75">
-            <p className="text-sm text-band-foreground/80">1 Nov 2026 from your PayPal</p>
-            <p className="text-xs text-band-foreground/70">
-              {money(deduction.contribution)} contribution · {money(deduction.savings)} savings · {money(deduction.loanRepayment)} loan
-            </p>
-          </Stat>
-        </section>
-
-        <ChamaRules snapshot={GROUP_SNAPSHOT} accountBalance={CHAMA_ACCOUNT_BALANCE} />
-
-        <Card className="rounded-3xl">
-          <CardHeader>
-            <CardTitle className="font-heading text-xl">Chama records</CardTitle>
-            <CardDescription>Sort, filter and resize any column. Every row matches a PayPal transaction.</CardDescription>
-          </CardHeader>
-          <CardContent>
-            <Tabs defaultValue="schedule" className="gap-5">
-              <TabsList className="h-10! w-full max-w-md rounded-xl p-1 sm:w-fit">
-                <TabsTrigger value="schedule" className="px-4">Auto-deductions</TabsTrigger>
-                <TabsTrigger value="ledger" className="px-4">My ledger</TabsTrigger>
-                <TabsTrigger value="members" className="px-4">Members</TabsTrigger>
-              </TabsList>
-              <TabsContent value="schedule">
-                <ScheduleGrid />
-              </TabsContent>
-              <TabsContent value="ledger">
-                <LedgerGrid />
-              </TabsContent>
-              <TabsContent value="members">
-                <MembersGrid />
-              </TabsContent>
-            </Tabs>
-          </CardContent>
-        </Card>
-      </main>
+      <Card className="rounded-3xl">
+        <CardHeader>
+          <CardTitle className="font-heading text-xl">Chama records</CardTitle>
+          <CardDescription>Every member sees the same records. Each payment row matches a PayPal transaction.</CardDescription>
+        </CardHeader>
+        <CardContent>
+          <Tabs defaultValue="ledger" className="gap-5">
+            <TabsList className="h-10! w-full max-w-md rounded-xl p-1 sm:w-fit">
+              <TabsTrigger value="ledger" className="px-4">Ledger</TabsTrigger>
+              <TabsTrigger value="members" className="px-4">Members</TabsTrigger>
+              <TabsTrigger value="schedule" className="px-4">Upcoming</TabsTrigger>
+            </TabsList>
+            <TabsContent value="ledger">
+              <LedgerGrid rows={d.ledger} />
+            </TabsContent>
+            <TabsContent value="members">
+              <MembersGrid rows={members} />
+            </TabsContent>
+            <TabsContent value="schedule">
+              <ScheduleGrid rows={d.schedule} />
+            </TabsContent>
+          </Tabs>
+        </CardContent>
+      </Card>
     </>
+  );
+}
+
+function DashboardSkeleton() {
+  return (
+    <div className="flex flex-col gap-6" aria-busy>
+      <div className="h-16 w-48 animate-pulse rounded-2xl bg-muted" />
+      <div className="h-40 animate-pulse rounded-3xl bg-muted" />
+      <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
+        {[0, 1, 2, 3].map((i) => (
+          <div key={i} className="h-40 animate-pulse rounded-3xl bg-muted" />
+        ))}
+      </div>
+    </div>
+  );
+}
+
+export default function DashboardPage({ searchParams }: PageProps<"/dashboard">) {
+  return (
+    <main className="mx-auto flex w-full max-w-7xl flex-1 flex-col gap-8 px-4 py-8 sm:px-6">
+      <Suspense fallback={<DashboardSkeleton />}>
+        <Dashboard searchParams={searchParams} />
+      </Suspense>
+    </main>
   );
 }

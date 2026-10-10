@@ -9,6 +9,7 @@ import { Faq } from "@/components/landing/faq";
 import { ProductTour } from "@/components/landing/product-tour";
 import { TrustSection } from "@/components/landing/trust-section";
 import { OffersSection } from "@/components/landing/offers-section";
+import { BusinessModel } from "@/components/landing/business-model";
 import { Cta, Footer } from "@/components/landing/cta-footer";
 
 export default function Home() {
@@ -24,6 +25,7 @@ export default function Home() {
         <Distance />
         <LoanCalculator />
         <OffersSection />
+        <BusinessModel />
         <Testimonials />
         <Faq />
         <Cta />

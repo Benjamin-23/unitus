@@ -13,12 +13,25 @@ import {
   DialogTrigger,
 } from "@/components/ui/dialog";
 import { Separator } from "@/components/ui/separator";
-import { exitStatus, money } from "@/lib/chama";
-import { DEMO_ACCOUNT, DEMO_GROUP } from "@/lib/mock-data";
+import { money } from "@/lib/chama";
 
-export function LeaveChama() {
-  const status = exitStatus(DEMO_GROUP, DEMO_ACCOUNT);
-  const { settlement } = status;
+/** What a member would get back on leaving, from their real ledger. */
+export function LeaveChama({
+  chamaName,
+  savings,
+  joiningFee,
+  drawsRemaining,
+  cycleEnd,
+}: {
+  chamaName: string;
+  savings: number;
+  joiningFee: number;
+  drawsRemaining: number;
+  cycleEnd: string;
+}) {
+  const allowed = drawsRemaining === 0;
+  // TODO(loans): deduct any outstanding loan balance once loans are stored.
+  const payout = savings + joiningFee;
 
   return (
     <Dialog>
@@ -28,42 +41,36 @@ export function LeaveChama() {
       </DialogTrigger>
       <DialogContent className="sm:max-w-md">
         <DialogHeader>
-          <DialogTitle className="font-heading text-xl">Leaving {DEMO_GROUP.name}</DialogTitle>
+          <DialogTitle className="font-heading text-xl">Leaving {chamaName}</DialogTitle>
           <DialogDescription>
-            {status.allowed
+            {allowed
               ? "The cycle is complete, so you can leave and withdraw your savings."
-              : `You can leave once the merry-go-round has gone all the way round. ${status.drawsRemaining} draws remain; the cycle ends in ${status.cycleEnds}.`}
+              : `You can leave once the merry-go-round has gone all the way round. ${drawsRemaining} draws remain; the cycle ends in ${cycleEnd}.`}
           </DialogDescription>
         </DialogHeader>
         <div className="rounded-2xl border p-4 text-sm">
           <p className="mb-2 font-semibold">If you left at the end of the cycle</p>
           <div className="flex justify-between py-1">
-            <span className="text-muted-foreground">Your savings</span>
-            <span>{money(settlement.savings)}</span>
+            <span className="text-muted-foreground">Your savings so far</span>
+            <span>{money(savings)}</span>
           </div>
           <div className="flex justify-between py-1">
             <span className="flex items-center gap-1.5 text-muted-foreground">
               <LockIcon className="size-3.5" /> Joining fee released
             </span>
-            <span>{money(settlement.joiningFee)}</span>
-          </div>
-          <div className="flex justify-between py-1">
-            <span className="text-muted-foreground">Loan balance deducted</span>
-            <span className="text-clay">−{money(settlement.loanDeducted)}</span>
+            <span>{money(joiningFee)}</span>
           </div>
           <Separator className="my-2" />
           <div className="flex justify-between py-1 font-semibold">
             <span>Paid to your PayPal</span>
-            <span className="font-heading text-lg">{money(settlement.payout)}</span>
+            <span className="font-heading text-lg">{money(payout)}</span>
           </div>
-          <p className="mt-2 text-xs text-muted-foreground">
-            Figures are as of today. Loan instalments paid before the cycle ends reduce the deduction.
-          </p>
+          <p className="mt-2 text-xs text-muted-foreground">Figures are as of today and grow with each monthly contribution.</p>
         </div>
         <DialogFooter>
           <DialogClose render={<Button variant="outline" />}>Stay in the chama</DialogClose>
-          <Button variant="destructive" disabled={!status.allowed}>
-            {status.allowed ? "Leave and withdraw" : `Available after ${status.cycleEnds}`}
+          <Button variant="destructive" disabled={!allowed}>
+            {allowed ? "Leave and withdraw" : `Available after ${cycleEnd}`}
           </Button>
         </DialogFooter>
       </DialogContent>
