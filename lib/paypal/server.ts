@@ -6,6 +6,12 @@ const ENV = process.env.PAYPAL_ENVIRONMENT === "production" ? "production" : "sa
 export const PAYPAL_API_BASE = ENV === "production" ? "https://api-m.paypal.com" : "https://api-m.sandbox.paypal.com";
 export const PAYPAL_ENV = ENV;
 
+/**
+ * Where members can see their own PayPal balance. PayPal doesn't share a
+ * personal account's balance with apps, so we link to PayPal instead.
+ */
+export const PAYPAL_ACCOUNT_URL = ENV === "production" ? "https://www.paypal.com/myaccount/summary" : "https://www.sandbox.paypal.com/myaccount/summary";
+
 export class PayPalError extends Error {
   constructor(
     message: string,

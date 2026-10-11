@@ -37,8 +37,16 @@ export type MemberAccount = {
   hasReceivedPayout: boolean;
 };
 
-export const money = (n: number, currency = "USD") =>
-  new Intl.NumberFormat("en-US", { style: "currency", currency, maximumFractionDigits: 2, minimumFractionDigits: 0 }).format(n);
+/** Whole amounts without cents ($100), anything else with both cent digits ($156.40). */
+export const money = (n: number, currency = "USD") => {
+  const whole = Math.round(n * 100) % 100 === 0;
+  return new Intl.NumberFormat("en-US", {
+    style: "currency",
+    currency,
+    minimumFractionDigits: whole ? 0 : 2,
+    maximumFractionDigits: whole ? 0 : 2,
+  }).format(n);
+};
 
 export function loanTotal(loan: Loan) {
   return loan.principal * (1 + loan.interestRate / 100);

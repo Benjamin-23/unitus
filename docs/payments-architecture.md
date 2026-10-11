@@ -134,6 +134,24 @@ Savings **share-out** (mid-year / year end) and a **leaving member's** refund re
 
 ---
 
+## Chama accounts and the ledger
+
+Unitus holds all money in **one** PayPal Business account; each chama has **accounts inside Unitus**, kept with a double-entry ledger (migration `0006_ledger.sql`, code in `lib/ledger.ts`).
+
+| Account | Number | Holds |
+|---|---|---|
+| PayPal pool | `UNT-POOL` | All real money at PayPal (debit-normal) |
+| Unitus operating | `UNT-OPS` | Unitus's own money; covers any gap when PayPal's fee exceeds what the member paid |
+| Merry-go-round pot | `UNT-<invite>-POT` | A chama's contributions awaiting payout |
+| Member savings | `UNT-<invite>-<member>-SAV` | One member's savings in that chama |
+| Locked joining fee | `UNT-<invite>-<member>-FEE` | One member's joining fee, returned when they leave |
+
+- Each completed payment posts one transaction whose entries sum to zero, e.g. a $150 deduction that netted $150.00: pool +150, pot −100, member savings −50.
+- The database enforces that every transaction balances, entries are append-only (corrections are reversing entries) and each payment posts once.
+- **Invariant:** `UNT-POOL` = all chama accounts + `UNT-OPS`. Reconciling `UNT-POOL` against PayPal's real balance (🛠) detects money moved outside Unitus.
+- Members and admins see the chama's accounts and statement on the dashboard and can download it as CSV.
+- `scripts/ledger-backfill.mjs` posts existing payments, first recording PayPal's real fee for payments captured before fee tracking.
+
 ## Fees
 
 Members pay PayPal's transaction fee on top, so each chama receives exactly the amount its rules say.

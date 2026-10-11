@@ -2,6 +2,7 @@
 import type { ChamaRow } from "@/lib/chamas";
 import { db } from "@/lib/db";
 import { withFee } from "@/lib/fees";
+import { chamaAccountNumber, chamaAccounts, chamaStatement, type LedgerAccount, type StatementRow } from "@/lib/ledger";
 
 type PaymentRow = {
   member_id: string;
@@ -82,7 +83,27 @@ export type ChamaDashboard = {
     feePaid: boolean;
   } | null;
   next: { date: string; contribution: number; savings: number; fee: number; total: number } | null;
+  /** The chama's account inside Unitus. */
+  account: {
+    number: string;
+    /** True when balances come from the double-entry ledger (migration 0006). */
+    fromLedger: boolean;
+    pot: number;
+    accounts: Pick<LedgerAccount, "number" | "name" | "kind" | "balance">[];
+    statement: StatementRow[];
+  };
 };
+
+/** Ledger accounts and statement, or null if the ledger isn't set up yet (migration 0006). */
+async function loadLedger(chamaId: string, viewerId: string) {
+  try {
+    const [accounts, statement] = await Promise.all([chamaAccounts(chamaId), chamaStatement(chamaId, viewerId)]);
+    return { accounts, statement };
+  } catch (error) {
+    console.warn("[ledger] not available, falling back to payment totals:", (error as Error).message);
+    return null;
+  }
+}
 
 // Unfinished checkouts (buyer never approved) aren't part of the ledger.
 const SETTLED = ["COMPLETED", "PENDING", "DENIED", "REFUNDED", "DECLINED", "FAILED"];
@@ -152,6 +173,10 @@ export async function getChamaDashboard(chamaId: string, memberId: string, now =
     net_amount: p.net_amount === null ? null : Number(p.net_amount),
   }));
 
+  const books = await loadLedger(chamaId, memberId);
+  const ledgerBalance = (memberId: string) =>
+    books?.accounts.filter((a) => a.member_id === memberId).reduce((sum, a) => sum + a.balance, 0) ?? null;
+
   const contribution = Number(chama.monthly_contribution);
   const savingsPerMonth = Number(chama.monthly_savings);
   const period = ym(now);
@@ -165,7 +190,7 @@ export async function getChamaDashboard(chamaId: string, memberId: string, now =
     const theirs = completed.filter((p) => p.member_id === m.member_id);
     const fee = theirs.filter((p) => p.kind === "joining_fee").reduce((sum, p) => sum + p.principal, 0);
     return {
-      balance: fee + mine.length * savingsPerMonth,
+      balance: ledgerBalance(m.member_id) ?? fee + mine.length * savingsPerMonth,
       feesPaid: theirs.reduce((sum, p) => sum + p.fee_charged, 0),
       name: names.get(m.member_id) ?? "Member",
       isYou: m.member_id === memberId,
@@ -207,6 +232,8 @@ export async function getChamaDashboard(chamaId: string, memberId: string, now =
     // for payments captured before fee tracking existed.
     balance: Math.round((completed.reduce((s, p) => s + (p.net_amount ?? p.principal), 0) - payouts) * 100) / 100,
   };
+  // With the ledger, the chama's balance is what its Unitus accounts hold.
+  if (books) pool.balance = Math.round(books.accounts.reduce((sum, a) => sum + a.balance, 0) * 100) / 100;
 
   const monthlyMap = new Map<string, MonthlyRow>();
   for (const p of completed) {
@@ -228,7 +255,7 @@ export async function getChamaDashboard(chamaId: string, memberId: string, now =
         lockedJoiningFee: myFee,
         savings: meRow.savings,
         contributed: meRow.contributed,
-        balance: myFee + meRow.savings,
+        balance: meRow.balance ?? myFee + meRow.savings,
         feesPaid: meRow.feesPaid,
         paidThisMonth: meRow.paidThisMonth,
         feePaid: meRow.feePaid,
@@ -272,6 +299,13 @@ export async function getChamaDashboard(chamaId: string, memberId: string, now =
     pool,
     you,
     next,
+    account: {
+      number: chamaAccountNumber(chama.invite_code),
+      fromLedger: Boolean(books),
+      pot: books?.accounts.find((a) => a.kind === "chama_pot")?.balance ?? pool.contributions,
+      accounts: (books?.accounts ?? []).map(({ number, name, kind, balance }) => ({ number, name, kind, balance })),
+      statement: books?.statement ?? [],
+    },
   };
 }
 

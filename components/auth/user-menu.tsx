@@ -1,6 +1,6 @@
 "use client";
 
-import { BadgeCheckIcon, LogOutIcon } from "lucide-react";
+import { BadgeCheckIcon, ExternalLinkIcon, LogOutIcon, WalletIcon } from "lucide-react";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 import { Button } from "@/components/ui/button";
 import {
@@ -48,6 +48,17 @@ export function UserMenu() {
           </DropdownMenuLabel>
         </DropdownMenuGroup>
         <DropdownMenuSeparator />
+        {me?.paypalAccountUrl && (
+          <a
+            href={me.paypalAccountUrl}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-sm hover:bg-muted"
+          >
+            <WalletIcon className="size-4" /> Check my PayPal balance
+            <ExternalLinkIcon className="ml-auto size-3.5 text-muted-foreground" />
+          </a>
+        )}
         <form action="/api/auth/logout" method="post">
           <button type="submit" className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-sm hover:bg-muted">
             <LogOutIcon className="size-4" /> Log out

@@ -1,6 +1,7 @@
 import { getSession } from "@/lib/auth/session";
 import { listChargeableChamas } from "@/lib/chamas";
 import { findDeduction, getVaultId, recordPayment } from "@/lib/db";
+import { postPayment } from "@/lib/ledger";
 import { chargeMonthlyDeduction, deductionPeriod } from "@/lib/paypal/orders";
 import { paypalErrorResponse } from "@/lib/paypal/server";
 
@@ -61,6 +62,7 @@ export async function POST(request: Request) {
       netAmount: result.netAmount,
       status: result.status,
     });
+    if (result.status === "COMPLETED") await postPayment(result.orderId);
     return Response.json({ ...result, chama: chama.name, period });
   } catch (error) {
     return paypalErrorResponse(error);
