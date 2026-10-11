@@ -4,6 +4,8 @@ import type { ColDef, ICellRendererParams, ValueFormatterParams } from "ag-grid-
 import { Badge } from "@/components/ui/badge";
 import { money } from "@/lib/chama";
 import type { LedgerRow, MemberRow, ScheduleRow } from "@/lib/dashboard";
+import type { StatementRow } from "@/lib/ledger";
+import type { WalletChama, WalletTransaction } from "@/lib/wallet";
 import { cn } from "@/lib/utils";
 import { DataGrid } from "./data-grid";
 
@@ -123,4 +125,95 @@ const memberCols: ColDef<MemberRow>[] = [
 export function MembersGrid({ rows }: { rows: MemberRow[] }) {
   if (rows.length === 0) return <Empty>No members yet. Share the invite link so people can join.</Empty>;
   return <DataGrid<MemberRow> rowData={rows} columnDefs={memberCols} getRowClass={(p) => (p.data?.isYou ? "font-semibold" : undefined)} />;
+}
+
+const statementCols: ColDef<StatementRow>[] = [
+  { field: "date", headerName: "Date", valueFormatter: fmtDate, maxWidth: 140 },
+  { field: "description", headerName: "Description", minWidth: 200 },
+  {
+    field: "member",
+    headerName: "Member",
+    minWidth: 160,
+    cellRenderer: (p: ICellRendererParams<StatementRow>) => (p.value ? <Name value={p.value} isYou={p.data?.isYou} /> : "—"),
+  },
+  { field: "account", headerName: "Account", minWidth: 200 },
+  { field: "accountNumber", headerName: "Account no.", minWidth: 190, cellClass: "font-mono text-xs" },
+  {
+    field: "amount",
+    headerName: "Amount",
+    type: "rightAligned",
+    maxWidth: 140,
+    cellRenderer: (p: ICellRendererParams) => (
+      <span className={cn("font-semibold tabular-nums", p.value >= 0 ? "text-primary" : "text-clay")}>
+        {p.value >= 0 ? "+" : "−"}
+        {money(Math.abs(p.value))}
+      </span>
+    ),
+  },
+  {
+    field: "balance",
+    headerName: "Chama balance",
+    type: "rightAligned",
+    maxWidth: 160,
+    cellRenderer: (p: ICellRendererParams) => <span className="tabular-nums">{money(p.value)}</span>,
+  },
+];
+
+export function StatementGrid({ rows }: { rows: StatementRow[] }) {
+  if (rows.length === 0) return <Empty>No entries yet. Every payment into this chama&apos;s accounts appears here.</Empty>;
+  return <DataGrid<StatementRow> rowData={rows} columnDefs={statementCols} pagination paginationPageSize={10} paginationPageSizeSelector={[10, 25, 50]} height={560} />;
+}
+
+const signed = (p: ICellRendererParams) =>
+  p.value ? (
+    <span className={cn("tabular-nums", p.value > 0 ? "text-primary" : "text-clay")}>
+      {p.value > 0 ? "+" : "−"}
+      {money(Math.abs(p.value))}
+    </span>
+  ) : (
+    <span className="text-muted-foreground">—</span>
+  );
+
+const walletChamaCols: ColDef<WalletChama>[] = [
+  { field: "name", headerName: "Chama", minWidth: 180, cellRenderer: (p: ICellRendererParams) => <span className="font-medium">{p.value}</span> },
+  { field: "accountNumber", headerName: "Account no.", minWidth: 160, cellClass: "font-mono text-xs" },
+  {
+    field: "status",
+    headerName: "Status",
+    maxWidth: 130,
+    cellRenderer: (p: ICellRendererParams) => <StatusBadge value={p.value === "open" ? "Open" : p.value === "active" ? "Paid" : "Closed"} />,
+  },
+  { headerName: "Members", maxWidth: 130, valueGetter: (p) => (p.data ? `${p.data.members} / ${p.data.memberLimit}` : "") },
+  { field: "createdAt", headerName: "Created", valueFormatter: fmtDate, maxWidth: 140 },
+  {
+    field: "balance",
+    headerName: "Balance held",
+    type: "rightAligned",
+    sort: "desc",
+    maxWidth: 160,
+    cellRenderer: (p: ICellRendererParams) => <span className="font-semibold tabular-nums">{money(p.value)}</span>,
+  },
+];
+
+export function WalletChamasGrid({ rows }: { rows: WalletChama[] }) {
+  if (rows.length === 0) return <Empty>No chamas yet.</Empty>;
+  return <DataGrid<WalletChama> rowData={rows} columnDefs={walletChamaCols} pagination paginationPageSize={10} paginationPageSizeSelector={[10, 25, 50]} height={460} />;
+}
+
+const walletTxCols: ColDef<WalletTransaction>[] = [
+  { field: "date", headerName: "Date", valueFormatter: fmtDate, sort: "desc", maxWidth: 130 },
+  { field: "chama", headerName: "Chama", minWidth: 150 },
+  { field: "accountNumber", headerName: "Account no.", minWidth: 150, cellClass: "font-mono text-xs" },
+  { field: "type", headerName: "Type", minWidth: 170 },
+  { field: "member", headerName: "Member", minWidth: 140, valueFormatter: (p) => p.value ?? "—" },
+  { field: "gross", headerName: "Paid by member", valueFormatter: fmtMoney, type: "rightAligned", maxWidth: 150 },
+  { field: "paypalFee", headerName: "PayPal fee", valueFormatter: fmtMoney, type: "rightAligned", maxWidth: 120 },
+  { field: "toPool", headerName: "Into pool", type: "rightAligned", maxWidth: 130, cellRenderer: signed },
+  { field: "toChama", headerName: "To chama", type: "rightAligned", maxWidth: 130, cellRenderer: signed },
+  { field: "unitus", headerName: "Unitus", headerTooltip: "Negative: Unitus covered a fee gap. Positive: Unitus kept the difference.", type: "rightAligned", maxWidth: 120, cellRenderer: signed },
+];
+
+export function WalletTransactionsGrid({ rows }: { rows: WalletTransaction[] }) {
+  if (rows.length === 0) return <Empty>No transactions yet. Every payment into any chama appears here.</Empty>;
+  return <DataGrid<WalletTransaction> rowData={rows} columnDefs={walletTxCols} pagination paginationPageSize={15} paginationPageSizeSelector={[15, 50, 100]} height={620} />;
 }

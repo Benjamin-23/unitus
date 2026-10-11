@@ -2,6 +2,7 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
+import { useMe } from "@/lib/auth/use-me";
 import { cn } from "@/lib/utils";
 
 const LINKS = [
@@ -12,9 +13,11 @@ const LINKS = [
 
 export function DashboardNav() {
   const pathname = usePathname();
+  const me = useMe();
+  const links = me?.isOperator ? [...LINKS, { href: "/dashboard/wallet", label: "Unitus wallet" }] : LINKS;
   return (
     <nav className="flex items-center gap-1">
-      {LINKS.map((l) => {
+      {links.map((l) => {
         const active = pathname === l.href;
         return (
           <Link

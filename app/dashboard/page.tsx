@@ -2,18 +2,19 @@ import { Suspense } from "react";
 import type { Metadata } from "next";
 import Link from "next/link";
 import { redirect } from "next/navigation";
-import { CalendarClockIcon, CoinsIcon, LockIcon, PiggyBankIcon, PlusIcon, RefreshCwIcon, UsersIcon, WalletIcon } from "lucide-react";
+import { CalendarClockIcon, CoinsIcon, DownloadIcon, LandmarkIcon, LockIcon, PiggyBankIcon, PlusIcon, RefreshCwIcon, UsersIcon, WalletIcon } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { buttonVariants } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Progress } from "@/components/ui/progress";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { LedgerGrid, MembersGrid, ScheduleGrid } from "@/components/dashboard/grids";
+import { LedgerGrid, MembersGrid, ScheduleGrid, StatementGrid } from "@/components/dashboard/grids";
 import { ChamaRules } from "@/components/dashboard/chama-rules";
 import { LeaveChama } from "@/components/dashboard/leave-chama";
 import { MyChamas } from "@/components/dashboard/my-chamas";
 import { RunDeduction } from "@/components/dashboard/run-deduction";
 import { getSession } from "@/lib/auth/session";
+import { PAYPAL_ACCOUNT_URL } from "@/lib/paypal/server";
 import { money } from "@/lib/chama";
 import { getChamaDashboard, listDashboardChamas, monthName } from "@/lib/dashboard";
 import { cn } from "@/lib/utils";
@@ -145,6 +146,9 @@ async function Dashboard({ searchParams }: { searchParams: PageProps<"/dashboard
         <Badge variant="outline" className="gap-1">
           <LockIcon className="size-3" /> Rules locked
         </Badge>
+        <Badge variant="outline" className="gap-1 font-mono">
+          <LandmarkIcon className="size-3" /> {d.account.number}
+        </Badge>
       </div>
 
       <section className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
@@ -154,7 +158,7 @@ async function Dashboard({ searchParams }: { searchParams: PageProps<"/dashboard
               <Progress value={(members.length / chama.member_limit) * 100} className="[&_[data-slot=progress-track]]:h-2" />
               <Note>{members.filter((m) => m.feePaid).length} have paid the joining fee</Note>
             </Stat>
-            <Stat icon={WalletIcon} label="Chama balance (net in pool)" value={money(pool.balance)}>
+            <Stat icon={WalletIcon} label="Chama account balance" value={money(pool.balance)}>
               <Note>
                 {money(pool.joiningFees)} joining fees · {money(pool.savings)} savings · {money(pool.contributions)} contributions
               </Note>
@@ -213,9 +217,17 @@ async function Dashboard({ searchParams }: { searchParams: PageProps<"/dashboard
           >
             <p className="text-sm text-band-foreground/80">{next ? `${fullDate(next.date)} from your PayPal` : "No more deductions this cycle"}</p>
             {next && (
-              <p className="text-xs text-band-foreground/70">
-                {money(next.contribution)} contribution · {money(next.savings)} savings · {money(next.fee)} PayPal fee
-              </p>
+              <>
+                <p className="text-xs text-band-foreground/70">
+                  {money(next.contribution)} contribution · {money(next.savings)} savings · {money(next.fee)} PayPal fee
+                </p>
+                <p className="rounded-xl bg-band-foreground/10 px-3 py-2 text-xs text-band-foreground/90">
+                  Make sure {money(next.total)} is available in your PayPal by {fullDate(next.date)}.{" "}
+                  <a href={PAYPAL_ACCOUNT_URL} target="_blank" rel="noopener noreferrer" className="font-semibold underline underline-offset-2">
+                    Check my PayPal balance ↗
+                  </a>
+                </p>
+              </>
             )}
             {/* Sandbox testing only: in production a scheduler collects contributions. */}
             {process.env.PAYPAL_ENVIRONMENT !== "production" && you?.feePaid && <RunDeduction />}
@@ -237,18 +249,63 @@ async function Dashboard({ searchParams }: { searchParams: PageProps<"/dashboard
         }}
       />
 
+      {d.account.fromLedger && d.account.accounts.length > 0 && (
+        <Card className="rounded-3xl">
+          <CardHeader className="flex flex-row items-start justify-between gap-4">
+            <div className="flex flex-col gap-1.5">
+              <CardTitle className="font-heading text-xl">Chama accounts</CardTitle>
+              <CardDescription>
+                Account {d.account.number} inside Unitus. The money is held in the Unitus PayPal pool; these accounts record whose it is.
+              </CardDescription>
+            </div>
+            <p className="shrink-0 text-right">
+              <span className="block text-xs text-muted-foreground">Total</span>
+              <span className="font-heading text-2xl font-semibold">{money(pool.balance)}</span>
+            </p>
+          </CardHeader>
+          <CardContent>
+            <ul className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
+              {d.account.accounts
+                .sort((a, b) => (a.kind === "chama_pot" ? -1 : b.kind === "chama_pot" ? 1 : a.name.localeCompare(b.name)))
+                .map((a) => (
+                  <li key={a.number} className="flex items-center justify-between gap-3 rounded-2xl border p-3">
+                    <div className="min-w-0">
+                      <p className="truncate text-sm font-medium">{a.name}</p>
+                      <p className="truncate font-mono text-xs text-muted-foreground">{a.number}</p>
+                    </div>
+                    <span className="font-semibold tabular-nums">{money(a.balance)}</span>
+                  </li>
+                ))}
+            </ul>
+          </CardContent>
+        </Card>
+      )}
+
       <Card className="rounded-3xl">
-        <CardHeader>
+        <CardHeader className="flex flex-row items-start justify-between gap-4">
+          <div className="flex flex-col gap-1.5">
           <CardTitle className="font-heading text-xl">Chama records</CardTitle>
           <CardDescription>Every member sees the same records. Each payment row matches a PayPal transaction.</CardDescription>
+          </div>
+          {d.account.fromLedger && (
+            <a href={`/api/chamas/${chama.id}/statement`} className={cn(buttonVariants({ variant: "outline" }), "shrink-0")}>
+              <DownloadIcon data-icon="inline-start" /> Statement (CSV)
+            </a>
+          )}
         </CardHeader>
         <CardContent>
-          <Tabs defaultValue="ledger" className="gap-5">
-            <TabsList className="h-10! w-full max-w-md rounded-xl p-1 sm:w-fit">
-              <TabsTrigger value="ledger" className="px-4">Ledger</TabsTrigger>
+          <Tabs defaultValue={d.account.fromLedger ? "statement" : "ledger"} className="gap-5">
+            <TabsList className="h-10! w-full max-w-lg rounded-xl p-1 sm:w-fit">
+              {d.account.fromLedger && (
+                <TabsTrigger value="statement" className="px-4">Statement</TabsTrigger>
+              )}
+              <TabsTrigger value="ledger" className="px-4">Payments</TabsTrigger>
               <TabsTrigger value="members" className="px-4">Members</TabsTrigger>
               <TabsTrigger value="schedule" className="px-4">Upcoming</TabsTrigger>
             </TabsList>
+            <TabsContent value="statement">
+              <StatementGrid rows={d.account.statement} />
+            </TabsContent>
             <TabsContent value="ledger">
               <LedgerGrid rows={d.ledger} />
             </TabsContent>

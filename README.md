@@ -1,25 +1,75 @@
 # Unitus
 
-**A chama for people who live far apart.** Unitus runs a savings group (a *chama*) online: members anywhere pay in every month through PayPal, one member wins the monthly merry-go-round pot, savings are shared out at mid-year or year end, and members can borrow against what they've saved.
+**A chama for people who live far apart.** Unitus runs a savings group (a *chama*) online. Members anywhere pay in every month through PayPal, one member wins the monthly merry-go-round pot, savings are shared out at mid-year or year end, and members can borrow against what they've saved.
 
-Built for a hackathon with Next.js, shadcn/ui, AG Grid, AG Studio and PayPal.
+Built for a hackathon with Next.js, Supabase, PayPal, shadcn/ui, AG Grid and AG Studio.
 
-> **Status: working prototype.** PayPal payments run against the **sandbox**. Member data, groups and partner offers are **demo data** until the backend exists. Search the code for `TODO(backend)` to find every placeholder.
+> **Status: working prototype on the PayPal sandbox.** Log in, chamas, invite codes, joining fees, monthly deductions, fees, the ledger and the Unitus wallet are real. The draw, payouts, loans, the scheduler and webhooks are not built yet (see [Roadmap](#roadmap)). Partner offers use a sample catalogue. Search the code for `TODO(backend)` to find placeholders.
 
 ---
 
-## The idea
+## The concept
 
-Chamas help families and friends save together, but they run on monthly meetings, cash and trust in one treasurer. That breaks down when members live in different countries.
+### The problem
+
+Chamas help families and friends save together, but they run on monthly meetings, cash, and trust in one treasurer. That breaks down when members live in different countries.
 
 | The problem | With Unitus |
 |---|---|
 | Members abroad can't make the meeting | Contribute by PayPal from any country |
-| Money sits with one treasurer, on trust | Money stays in the chama's own PayPal account; **nobody can withdraw** |
+| Money sits with one treasurer, on trust | Money sits with Unitus, not with any member; **nobody can withdraw it** |
 | Rules change quietly; the draw gets disputed | Rules **lock when the chama is created**; the draw is random and recorded |
-| Records live in a notebook | One shared ledger every member can see |
+| Records live in a notebook | One shared ledger and statement every member can see |
 
-### How it makes money
+### How a chama works
+
+1. **A creator starts a chama** and sets its rules: monthly contribution, monthly savings, joining fee, deduction day, share-out date, loan multiplier and interest rate. The rules **lock** as soon as it's created.
+2. **Members join** with an invite code or link and pay the **joining fee** through PayPal. That payment also saves their PayPal for monthly charges. The fee stays locked in their savings until they leave.
+3. **Every month Unitus deducts** the contribution and savings from each member's saved PayPal automatically. Members pay the PayPal processing fee on top.
+4. **The merry-go-round:** each month one member is drawn at random and receives the pot, until everyone has had a turn.
+5. **Savings** are shared out at mid-year or year end. **Loans** can be taken up to *savings × multiplier* at the chama's rate.
+6. **A member can leave** only once the merry-go-round has gone all the way round, and gets their savings and joining fee back. **A chama can be deleted** only when it's clean: everyone paid out, savings shared, no loans left.
+
+### Who's who
+
+| Role | Can | Can't |
+|---|---|---|
+| **Chama admin** (creator) | Set the rules once, invite members, see the chama's records | Be a member of any chama, pay into one, edit rules, or move money |
+| **Member** | Join, pay, see their balance and the chama's statement, leave after the cycle | Withdraw the chama's money |
+| **Unitus operator** (staff) | View the Unitus wallet across all chamas (read-only) | Move money by hand |
+| **Server** | Charge deductions and (soon) pay out winners, automatically | — |
+
+Admin rights and money are kept strictly apart: **managing a group never gives access to its funds.** The account that creates a chama has to be separate from any account that pays into one, so a creator who also wants to save needs a second PayPal account as a member.
+
+### Where the money is: one pool, accounts inside Unitus
+
+Unitus works like a bank: **one real PayPal Business account holds all the money**, and each chama has **accounts inside Unitus**, kept with a double-entry ledger.
+
+```
+          ┌──────────────────────────────────────────────┐
+          │  Unitus PayPal Business account (real money)  │  UNT-POOL
+          └──────────────────────────────────────────────┘
+                            ▲ always equals the sum of ▼
+  ┌───────────────────┐ ┌───────────────────┐ ┌───────────────────┐
+  │ UNT-R2NM-BSMA      │ │ UNT-…  (chama B)   │ │ UNT-OPS            │
+  │  ├ -POT  pot       │ │                    │ │ Unitus's own money │
+  │  ├ -…-SAV savings  │ │                    │ │                    │
+  │  └ -…-FEE joining  │ │                    │ │                    │
+  └───────────────────┘ └───────────────────┘ └───────────────────┘
+```
+
+- Every payment is posted as one transaction whose entries balance to zero. For example, a $150 deduction posts +$150 to the pool, $100 to the chama's pot and $50 to the member's savings.
+- The database refuses unbalanced or duplicate postings, and the ledger is append-only.
+- If PayPal takes more than the fee a member paid, Unitus covers the gap so a chama is never short.
+- Comparing `UNT-POOL` with PayPal's real balance (shown on the Unitus wallet screen) catches money moved outside the app.
+
+Full design: [`docs/payments-architecture.md`](docs/payments-architecture.md).
+
+### Fees
+
+Members pay PayPal's processing fee on top of what goes to the chama, so the chama receives the full amount. The fee is grossed up as `(amount + $0.30) / (1 − 3.9%)` (configurable). For example, $100 becomes $104.37 and $150 becomes $156.40. PayPal's actual fee and net are recorded for every payment.
+
+### How Unitus makes money
 
 ```
 Members save every month ─► A winner gets the pot ─► Partner businesses offer member deals
@@ -27,55 +77,117 @@ Members save every month ─► A winner gets the pot ─► Partner businesses 
           └──────── chamas stay free ◄── Unitus earns a 3% referral fee on each sale
 ```
 
-- **Free for members and chamas** (standard PayPal fees apply to payments).
+- **Free for members and chamas.** Only PayPal's fee applies.
 - **Partner businesses** (electronics, cars, solar, phones, farming, education) list offers sized to members' payouts and pay a **3% referral fee only when they sell**. They see demand in totals, never member names or contacts.
 
 ---
 
 ## Features
 
-### For members
-- **Log in with PayPal** (real, via PayPal's OpenID Connect): your PayPal account is your Unitus account; members are stored in Supabase
-- **Onboarding:** join a chama with an invite code, pay the **joining fee** (locked in your savings until you leave), agree to **monthly auto-deductions**
-- **Dashboard:** savings, merry-go-round progress, loan balance, next deduction, locked rules, chama account
-- **Loans:** borrow up to *savings × group multiplier* at the group's flat rate; repayments join the monthly deduction
-- **Leave the chama** only after the merry-go-round completes its cycle; any loan is settled from savings
-- **Analytics** (AG Studio): contributions by month, savings by country, loans per member, cross-filtering
-- **Partner offers:** deals ranked by how well they fit your payout (covered / deposit / out of reach), with an opt-out
+### Members
+- **Log in with PayPal** (OpenID Connect): your PayPal personal account is your Unitus account
+- **Onboarding:** join with an invite code or link, pay the joining fee (fee breakdown shown), agree to auto-deductions
+- **Dashboard:** your balance, the chama's account number and balance, merry-go-round progress, next deduction with a "make sure it's in your PayPal" reminder, locked rules
+- **Chama accounts and statement:** the pot and each member's savings and joining-fee accounts, a running statement, and a **CSV download**
+- **Check my PayPal balance:** a link to PayPal's own account page (PayPal doesn't share personal balances with apps)
+- **Analytics** (AG Studio) and **partner offers** sized to your payout
 
-### For chama creators
-- **Start a chama** in five steps with a live preview: contribution, savings, joining fee, deduction day, share-out date, loan multiplier and interest rate
-- Rules **lock on creation**: no edits and no withdrawals; money only leaves through automatic payouts
-- A chama can only be **deleted once it's clean**: everyone paid out, savings shared, no loans left
+### Chama creators
+- **Start a chama** in five steps with a live preview, then share the invite code via copy, WhatsApp or the share sheet
+- Rules **lock on creation**; deletion only when the chama is clean
 
-### For businesses (`/business`)
-- Partner application and dashboard: offers (AG Grid), views, sales, earnings after the referral fee
-- Aggregate winner demand by payout size (no personal data)
-- New-offer form with optional instalments (member pays the deposit from their payout)
+### Unitus operators (`/dashboard/wallet`)
+- Wallet balance from the ledger next to **PayPal's live balance**, with the difference flagged
+- Number of chamas (open / full / closed), members, money held for chamas, PayPal fees and what Unitus covered
+- Every chama's account and balance, and the **transaction history** across all chamas (AG Grid)
+- Read-only; visible only to emails in `UNITUS_OPERATOR_EMAILS`
+
+### Businesses (`/business`)
+- Partner application and dashboard: offers, views, sales, earnings after the referral fee, demand by payout size
 
 ### Also
-- Landing page with an auto-playing product tour of real screenshots on laptop, tablet and phone
-- Light, dark and system themes
-- Responsive down to phone width; respects *reduce motion*
+- Landing page with an auto-playing product tour of real screenshots
+- Light, dark and system themes; responsive to phone width; respects *reduce motion*
 
 ---
 
-## PayPal integration (sandbox)
+## PayPal integration
 
-Uses PayPal's **v6 Web SDK** with orders created and captured on the server.
+Uses PayPal's **v6 Web SDK** in the browser, with every order created and captured on the server.
 
 | What | How |
 |---|---|
-| Joining fee | One-time payment that **also saves the member's PayPal** (vault) for monthly charges |
-| Monthly deduction | Charged to the saved PayPal with no approval step. A scheduler would run it on the deduction day; the dashboard has a **"Run it now (sandbox)"** button for testing |
-| Partner offer | Checkout for the member price, or the deposit for instalment items |
+| Log in | Log in with PayPal (personal accounts) |
+| Joining fee | One-time payment that also **saves the member's PayPal** (vault) for monthly charges |
+| Monthly deduction | Charged to the saved PayPal with no approval step. In the sandbox the dashboard has a **"Run it now"** button; a scheduler will run it on the deduction day |
+| Partner offer | Checkout for the offer price or deposit |
+| Wallet balance | Balances API on the Unitus business account |
 
-Server endpoints live in `app/api/paypal/`. Amounts are always calculated on the server; every POST sends a `PayPal-Request-Id` so retries can't double-charge; 429/5xx responses are retried with backoff; errors log PayPal's `debug_id`.
+Amounts are always calculated on the server, from the chama's locked rules. Every POST sends a `PayPal-Request-Id`, so retries can't charge twice; a monthly deduction uses one fixed id per chama, member and month. 429 and 5xx responses are retried with backoff, and errors log PayPal's `debug_id`.
 
-**Before going live**
-- Add a webhook endpoint (needs a public URL) to confirm payments
-- Splitting the referral fee automatically needs PayPal's multiparty/platform onboarding
-- Offering instalments may need a credit licence in some countries; get the terms checked
+---
+
+## Project structure
+
+```
+unitus/
+├── app/                                  Routes (Next.js App Router)
+│   ├── page.tsx                          Landing page
+│   ├── (auth)/login, signup              Log in with PayPal
+│   ├── onboarding/                       Join a chama, pay the joining fee, set up deductions
+│   ├── groups/new/                       Start a chama
+│   ├── join/[code]/                      Invite links → /onboarding?code=…
+│   ├── dashboard/
+│   │   ├── page.tsx                      Member / admin overview, accounts, statement, records
+│   │   ├── analytics/                    AG Studio analytics
+│   │   ├── offers/                       Partner offers
+│   │   └── wallet/                       Unitus wallet (operators only)
+│   ├── business/                         Partner sign-up and dashboard
+│   ├── paypal/return/                    Return page after PayPal approval
+│   └── api/
+│       ├── auth/                         paypal/login, paypal/callback, logout, me
+│       ├── chamas/                       create, lookup, join, [chamaId]/statement (CSV)
+│       └── paypal/                       client-token, orders, orders/[id]/capture, deductions
+├── components/
+│   ├── landing/                          Landing sections, device frames, product tour
+│   ├── dashboard/                        Dashboard cards, AG Grid tables, nav, leave / rules
+│   ├── create/  onboarding/              Create-chama and join flows
+│   ├── auth/  paypal/                    Login button, user menu, PayPal pay button
+│   ├── analytics/  marketplace/          AG Studio report, offers, partner portal
+│   ├── illustrations/  theme/            Artwork, theme toggle
+│   └── ui/                               shadcn/ui components
+├── lib/                                  Logic; server-only except auth/use-me.ts and paypal/client.ts
+│   ├── paypal/
+│   │   ├── server.ts                     REST client: token cache, request ids, retries
+│   │   ├── orders.ts                     Joining fee, offers, monthly deduction
+│   │   ├── identity.ts                   Log in with PayPal
+│   │   └── client.ts                     Browser v6 SDK loader
+│   ├── auth/
+│   │   ├── session.ts                    Signed session cookie
+│   │   ├── redirects.ts                  Safe redirects, 127.0.0.1 in dev
+│   │   ├── operator.ts                   Who can see the Unitus wallet
+│   │   └── use-me.ts                     Current member (client hook)
+│   ├── db.ts                             Supabase client, members, saved PayPal, payments
+│   ├── chamas.ts                         Create / look up / join chamas, invite codes
+│   ├── dashboard.ts                      Dashboard data for one chama
+│   ├── ledger.ts                         Chama accounts, posting, statements
+│   ├── wallet.ts                         Unitus wallet across all chamas
+│   ├── fees.ts                           Fee gross-up
+│   ├── chama.ts                          Rule maths: deductions, loans, exit, formatting
+│   └── marketplace.ts, marketplace-data.ts   Offer matching, sample catalogue
+├── supabase/migrations/                  Run in order in the Supabase SQL Editor
+│   ├── 0001_members_and_payments.sql     Members, saved PayPal, payments
+│   ├── 0002_chamas.sql                   Chamas, memberships, rule lock, create / join
+│   ├── 0003_admin_is_not_a_member.sql    Creators can't be members
+│   ├── 0004_creator_accounts_are_separate.sql   Creator accounts are separate accounts
+│   ├── 0005_payment_fees.sql             Principal, fee charged, PayPal fee, net
+│   └── 0006_ledger.sql                   Double-entry ledger and chama accounts
+├── scripts/
+│   ├── ledger-backfill.mjs               Post existing payments to the ledger
+│   └── capture-screens.py                Re-capture landing-page screenshots
+├── docs/payments-architecture.md         Money flow, ledger, roles, compliance
+└── proxy.ts                              Sends signed-out visitors to /login
+```
 
 ---
 
@@ -86,44 +198,49 @@ Requires Node 20+ and pnpm.
 ```bash
 pnpm install
 cp .env.example .env      # then fill in the values below
-pnpm dev                  # http://localhost:3000
+pnpm dev                  # open http://127.0.0.1:3000
 ```
 
 ### Environment variables (`.env`)
 
 | Variable | Required | What it is |
 |---|---|---|
-| `PAYPAL_CLIENT_ID` | yes | Sandbox app client ID (developer.paypal.com → Apps & Credentials) |
-| `PAYPAL_CLIENT_SECRET` | yes | Sandbox app secret. Server only, never sent to the browser |
+| `PAYPAL_CLIENT_ID` | yes | Client ID of the Unitus app (developer.paypal.com → Apps & Credentials) |
+| `PAYPAL_CLIENT_SECRET` | yes | App secret. Server only |
 | `PAYPAL_ENVIRONMENT` | yes | `sandbox` or `production` |
-| `PAYPAL_DEMO_MERCHANT_EMAIL` | no | A sandbox business account that receives partner-offer payments (otherwise your own account does) |
-| `PAYPAL_DOMAINS` | production | Your site's domain, for PayPal client tokens |
 | `SESSION_SECRET` | yes | 32+ random characters that sign the login cookie. Changing it logs everyone out |
-| `SUPABASE_URL` | yes | Supabase project URL (Project Settings → API) |
-| `SUPABASE_SECRET_KEY` | yes | Supabase secret / service-role key. Server only, never prefix with `NEXT_PUBLIC_` |
-| `PAYPAL_LOGIN_REDIRECT_URI` | no | Override the Log in with PayPal return URL (default `<site>/api/auth/paypal/callback`) |
-| `NEXT_PUBLIC_AG_STUDIO_LICENSE_KEY` | for analytics | AG Studio licence. Checked in the browser, so it ships in the client bundle |
+| `SUPABASE_URL` | yes | Supabase project URL |
+| `SUPABASE_SECRET_KEY` | yes | Supabase secret key. Server only; never prefix with `NEXT_PUBLIC_` |
+| `UNITUS_OPERATOR_EMAILS` | production | Comma-separated staff emails who can view the Unitus wallet. Empty in development = everyone signed in (with a warning) |
+| `PAYPAL_FEE_PERCENT`, `PAYPAL_FEE_FIXED` | no | Fee gross-up rate (default 3.9% + $0.30) |
+| `PAYPAL_LOGIN_REDIRECT_URI` | no | Override the Log in with PayPal return URL |
+| `PAYPAL_DEMO_MERCHANT_EMAIL` | no | Sandbox business account that receives partner-offer payments |
+| `PAYPAL_DOMAINS` | production | Your site's domain, for PayPal client tokens |
+| `NEXT_PUBLIC_AG_STUDIO_LICENSE_KEY` | for analytics | AG Studio licence (checked in the browser) |
 
 `.env` is git-ignored. Never commit real keys.
 
 ### Set up the database (Supabase)
 1. Create a project at [supabase.com](https://supabase.com).
-2. Open **SQL Editor**, paste `supabase/migrations/0001_members_and_payments.sql` and run it.
-3. Copy the project URL and secret key into `.env`.
+2. In the **SQL Editor**, run each file in `supabase/migrations/` **in order** (0001 → 0006).
+3. Put the project URL and secret key in `.env`.
+4. If you already had payments before 0006: `node --env-file=.env scripts/ledger-backfill.mjs`.
 
-The app only talks to Supabase from the server. Row level security is on with no policies, so the public key can't read anything.
+Supabase is only used from the server. Row level security is on with no policies, so the public key can't read anything.
 
 ### Set up Log in with PayPal
 1. developer.paypal.com → **Apps & Credentials** → your sandbox app → **Features** → tick **Log in with PayPal** → **Advanced settings**.
-2. Return URL: `http://127.0.0.1:3000/api/auth/paypal/callback` (must match exactly; add your deployed URL later). PayPal won't save `localhost` here, so in development the app switches to `127.0.0.1` automatically when you click Log in.
-3. Information to request: **Full name** and **Email**. Privacy policy and user agreement URLs can be `https://example.com` for testing.
-4. Save, then go to `/login` and sign in with a sandbox **personal** account.
+2. Return URL: `http://127.0.0.1:3000/api/auth/paypal/callback`. PayPal won't accept `localhost`, so in development the app switches to `127.0.0.1` automatically.
+3. Request **Full name** and **Email**. For testing, the privacy policy and user agreement URLs can be `https://example.com`.
 
-### Try a payment
-1. In the PayPal developer dashboard, create a sandbox **personal** account (the member) and use your app's **business** account as the chama.
-2. Log in with PayPal, go to `/onboarding`, use invite code **`UMOJA-7K2Q`**, tick the agreement and pay the joining fee with the personal account.
-3. On `/dashboard`, click **Run it now (sandbox)** to charge the monthly deduction.
-4. Check the balances at [sandbox.paypal.com](https://www.sandbox.paypal.com).
+Log in with a sandbox **personal** account. PayPal business accounts can't use Log in with PayPal.
+
+### Try it end to end (sandbox)
+1. Create **two sandbox personal accounts** in the PayPal developer dashboard: one to create the chama, one to join it.
+2. Log in as the first, go to **New chama**, create one and copy its invite code.
+3. Log out, log in as the second, open the invite link (or `/onboarding`), and pay the joining fee.
+4. On `/dashboard`, see the chama account and statement, then click **Run it now (sandbox)** to charge a monthly deduction.
+5. Open `/dashboard/wallet` to see the Unitus wallet and compare it with PayPal's real balance.
 
 ### Scripts
 
@@ -132,45 +249,20 @@ The app only talks to Supabase from the server. Row level security is on with no
 | `pnpm dev` | Development server |
 | `pnpm build` / `pnpm start` | Production build / serve |
 | `pnpm lint` | ESLint |
-| `python3 scripts/capture-screens.py --base-url http://localhost:3000` | Re-capture the landing-page screenshots (needs Chrome and Pillow; run the app first) |
+| `node --env-file=.env scripts/ledger-backfill.mjs` | Post existing payments to the ledger (safe to re-run) |
+| `python3 scripts/capture-screens.py --base-url http://127.0.0.1:3000` | Re-capture landing-page screenshots (needs Chrome and Pillow) |
 
 ---
 
-## Pages
+## Roadmap
 
-| Route | |
-|---|---|
-| `/` | Landing page |
-| `/login`, `/signup` | Log in with PayPal |
-| `/onboarding` | Join a chama, pay the joining fee, set up auto-deductions |
-| `/groups/new` | Start a chama |
-| `/dashboard` | Member overview, records (AG Grid), loans, leave / delete |
-| `/dashboard/analytics` | AG Studio analytics |
-| `/dashboard/offers` | Partner offers |
-| `/business`, `/business/dashboard` | Partner sign-up and dashboard |
-
-## Project structure
-
-```
-app/                 routes (App Router) and API route handlers (app/api/paypal)
-components/
-  landing/           landing page sections, device frames, product tour
-  dashboard/         member dashboard, AG Grid tables, loan / leave / delete dialogs
-  analytics/         AG Studio report and theme
-  marketplace/       offers browser, partner application and dashboard
-  onboarding/ create/ auth/ paypal/ theme/ illustrations/ ui/ (shadcn)
-lib/
-  chama.ts           chama rules: deductions, loan limits, exit, deletion, validation
-  marketplace.ts     offer matching and referral fee
-  paypal/            PayPal REST client, orders, Log in with PayPal, browser SDK loader
-  auth/              signed session cookie, current-member hook
-  db.ts              Supabase (server only): members, saved PayPal, payments
-  mock-data.ts, marketplace-data.ts   demo data
-scripts/capture-screens.py           landing-page screenshot capture
-supabase/migrations/                 database schema
-proxy.ts                             sends signed-out visitors to /login
-```
+- **Draw and payouts:** random monthly winner, paid automatically with the PayPal Payouts API and posted to the ledger
+- **Scheduler:** run deductions and draws on their dates (protected by `CRON_SECRET`), with reminder emails before each deduction
+- **Webhooks:** confirm captures that complete later (needs a public HTTPS URL)
+- **Daily reconciliation** with alerts when PayPal and the ledger disagree
+- **Loans** in the database, savings share-out, leave and delete actions
+- **Before going live:** holding money for many groups usually needs a licence (e.g. a payment-service provider licence) and PayPal's approval; the referral-fee split needs PayPal's multiparty onboarding
 
 ## Tech stack
 
-Next.js 16 (App Router, Cache Components) · Supabase (Postgres) · React 19 · TypeScript · Tailwind CSS v4 · shadcn/ui (Base UI) · AG Grid Community · AG Studio · PayPal v6 Web SDK + REST · next-themes · lucide-react
+Next.js 16 (App Router, Cache Components) · React 19 · TypeScript · Supabase (Postgres) · PayPal v6 Web SDK + REST · Tailwind CSS v4 · shadcn/ui (Base UI) · AG Grid Community · AG Studio · next-themes · lucide-react
