@@ -133,7 +133,7 @@ async function Wallet() {
       <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
         <Stat icon={BuildingIcon} label="Chamas" value={String(counts.chamas)}>
           <Note>
-            {counts.open} open · {counts.active} full{counts.closed > 0 && <> · {counts.closed} closed</>}
+            {counts.active} running · {counts.open} not started{counts.closed > 0 && <> · {counts.closed} closed</>}
           </Note>
         </Stat>
         <Stat icon={UsersIcon} label="Members across chamas" value={String(counts.members)}>

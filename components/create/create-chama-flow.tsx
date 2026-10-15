@@ -21,15 +21,17 @@ import { Input } from "@/components/ui/input";
 import { Separator } from "@/components/ui/separator";
 import { Textarea } from "@/components/ui/textarea";
 import { ShareInvite } from "./share-invite";
-import { AUTOMATIC_PAYOUTS, money, ordinal, validateRules, type GroupRules } from "@/lib/chama";
+import { AUTOMATIC_PAYOUTS, money, validateRules, type GroupRules } from "@/lib/chama";
+import { FREQUENCIES, formatDue, perRound, type Frequency } from "@/lib/schedule";
 import { cn } from "@/lib/utils";
 
-type FormState = GroupRules & { startMonth: string; description: string };
+/** `startsAt` is an ISO timestamp; the input shows it in the browser's time zone. */
+type FormState = GroupRules & { startsAt: string; description: string };
 type FieldKey = keyof FormState;
 
 const STEPS: { title: string; fields: FieldKey[] }[] = [
-  { title: "Basics", fields: ["name", "memberCount", "startMonth"] },
-  { title: "Monthly money", fields: ["monthlyContribution", "monthlySavings", "joiningFee", "deductionDay"] },
+  { title: "Basics", fields: ["name", "memberCount", "frequency", "startsAt"] },
+  { title: "Money per round", fields: ["monthlyContribution", "monthlySavings", "joiningFee"] },
   { title: "Savings & loans", fields: ["shareOut", "loanMultiplier", "loanInterestRate"] },
   { title: "The money", fields: [] },
   { title: "Review & lock", fields: [] },
@@ -39,23 +41,27 @@ const INITIAL: FormState = {
   name: "",
   description: "",
   memberCount: 10,
-  startMonth: "2026-11",
+  frequency: "monthly",
+  startsAt: "",
   currency: "USD",
   monthlyContribution: 100,
   monthlySavings: 50,
   joiningFee: 100,
-  deductionDay: 1,
   shareOut: "year-end",
   loanMultiplier: 3,
   loanInterestRate: 5,
 };
 
 
-function monthLabel(ym: string, offset = 0) {
-  const [y, m] = ym.split("-").map(Number);
-  if (!y || !m) return "—";
-  return new Date(y, m - 1 + offset, 1).toLocaleDateString("en-GB", { month: "short", year: "numeric" });
+/** ISO → the "YYYY-MM-DDTHH:mm" a datetime-local input wants, in local time. */
+function toLocalInput(iso: string) {
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return "";
+  const pad = (n: number) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
 }
+
+const when = (f: FormState) => (f.startsAt ? formatDue(f.startsAt, f.frequency) : "—");
 
 function MoneyInput({
   id,
@@ -100,14 +106,16 @@ function Choice<T extends string | number>({
   options,
   onChange,
   label,
+  className,
 }: {
   value: T;
   options: { value: T; label: string; hint?: string }[];
   onChange: (v: T) => void;
   label: string;
+  className?: string;
 }) {
   return (
-    <div role="radiogroup" aria-label={label} className={cn("grid gap-2", options.length > 2 ? "grid-cols-5" : "grid-cols-2")}>
+    <div role="radiogroup" aria-label={label} className={cn("grid gap-2", options.length > 2 ? "grid-cols-5" : "grid-cols-2", className)}>
       {options.map((o) => (
         <button
           key={String(o.value)}
@@ -130,10 +138,12 @@ function Choice<T extends string | number>({
 
 function Preview({ f }: { f: FormState }) {
   const ok = (n: number) => (Number.isFinite(n) ? n : 0);
-  const payout = ok(f.memberCount) * ok(f.monthlyContribution);
-  const monthly = ok(f.monthlyContribution) + ok(f.monthlySavings);
-  const savingsYear = ok(f.memberCount) * ok(f.monthlySavings) * 12;
+  // A full chama: each round, everyone except the recipient pays in.
+  const payout = Math.max(0, ok(f.memberCount) - 1) * ok(f.monthlyContribution);
+  const perMember = ok(f.monthlyContribution) + ok(f.monthlySavings);
+  const savingsCycle = ok(f.memberCount) * ok(f.memberCount) * ok(f.monthlySavings);
   const exampleLoan = (ok(f.joiningFee) + ok(f.monthlySavings) * 6) * ok(f.loanMultiplier);
+  const per = perRound(f.frequency);
   return (
     <Card className="gap-4 rounded-3xl bg-band text-band-foreground lg:sticky lg:top-24">
       <CardHeader>
@@ -142,27 +152,29 @@ function Preview({ f }: { f: FormState }) {
       </CardHeader>
       <CardContent className="flex flex-col gap-4 text-sm">
         <div className="rounded-2xl bg-band-foreground/10 p-4">
-          <p className="text-band-foreground/70">Each month one member receives</p>
+          <p className="text-band-foreground/70">Each round ({FREQUENCIES[f.frequency].label.toLowerCase()}) one member receives</p>
           <p className="font-heading text-3xl font-semibold">{money(payout)}</p>
+          <p className="text-xs text-band-foreground/70">when all {ok(f.memberCount)} places are filled; less while it&apos;s filling up</p>
         </div>
         <dl className="grid grid-cols-2 gap-x-4 gap-y-3">
           <div>
             <dt className="text-band-foreground/70">Each member pays</dt>
-            <dd className="font-semibold">{money(monthly)} / month</dd>
+            <dd className="font-semibold">
+              {money(perMember)} / {per}
+            </dd>
             <dd className="text-xs text-band-foreground/70">plus PayPal&apos;s fee, paid by the member</dd>
           </div>
           <div>
-            <dt className="text-band-foreground/70">Cycle</dt>
-            <dd className="font-semibold">
-              {monthLabel(f.startMonth)} – {monthLabel(f.startMonth, ok(f.memberCount) - 1)}
-            </dd>
+            <dt className="text-band-foreground/70">First round</dt>
+            <dd className="font-semibold">{when(f)}</dd>
+            <dd className="text-xs text-band-foreground/70">once 2 members have paid</dd>
           </div>
           <div>
-            <dt className="text-band-foreground/70">Savings pool / year</dt>
-            <dd className="font-semibold">{money(savingsYear)}</dd>
+            <dt className="text-band-foreground/70">Savings pool / cycle</dt>
+            <dd className="font-semibold">{money(savingsCycle)}</dd>
           </div>
           <div>
-            <dt className="text-band-foreground/70">Loan after 6 months</dt>
+            <dt className="text-band-foreground/70">Loan after 6 rounds</dt>
             <dd className="font-semibold">up to {money(exampleLoan)}</dd>
           </div>
         </dl>
@@ -185,9 +197,10 @@ function ReviewRow({ label, value }: { label: string; value: string }) {
   );
 }
 
-/** `defaultStartMonth` ("YYYY-MM") comes from the server so the default is always next month. */
-export function CreateChamaFlow({ defaultStartMonth }: { defaultStartMonth: string }) {
-  const [f, setF] = useState<FormState>(() => ({ ...INITIAL, startMonth: defaultStartMonth }));
+/** `defaultStartsAt` (ISO) comes from the server so the default is always just ahead of now. */
+export function CreateChamaFlow({ defaultStartsAt, allowTestFrequency }: { defaultStartsAt: string; allowTestFrequency: boolean }) {
+  const [f, setF] = useState<FormState>(() => ({ ...INITIAL, startsAt: defaultStartsAt }));
+  const frequencies = (Object.keys(FREQUENCIES) as Frequency[]).filter((k) => allowTestFrequency || !FREQUENCIES[k].testOnly);
   const [step, setStep] = useState(0);
   const [showErrors, setShowErrors] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -196,7 +209,7 @@ export function CreateChamaFlow({ defaultStartMonth }: { defaultStartMonth: stri
   const [createError, setCreateError] = useState<string | null>(null);
 
   const set = <K extends FieldKey>(k: K, v: FormState[K]) => setF((prev) => ({ ...prev, [k]: v }));
-  const errors = validateRules(f);
+  const errors = validateRules(f, { allowTestFrequency });
   const stepErrors = STEPS[step].fields.filter((k) => k in errors);
   const err = (k: FieldKey) => (showErrors ? (errors as Record<string, string | undefined>)[k] : undefined);
   const allAcked = ack.locked && ack.noWithdraw && ack.deletion;
@@ -238,7 +251,8 @@ export function CreateChamaFlow({ defaultStartMonth }: { defaultStartMonth: stri
           </div>
           <CardTitle className="mt-2 font-heading text-2xl">{f.name} is live</CardTitle>
           <CardDescription className="text-base">
-            The rules are locked. Share this invite code with the {f.memberCount} members.
+            The rules are locked. Share this invite code with up to {f.memberCount} members. The first round runs {when(f)} once 2
+            members have paid the joining fee; others can join while it runs.
           </CardDescription>
         </CardHeader>
         <CardContent className="flex flex-col items-center gap-4">
@@ -248,14 +262,17 @@ export function CreateChamaFlow({ defaultStartMonth }: { defaultStartMonth: stri
           </p>
           <Alert className="max-w-md text-left">
             <LockIcon />
-            <AlertTitle>This account is the chama&apos;s admin</AlertTitle>
+            <AlertTitle>Chama account UNT-{created} is open</AlertTitle>
             <AlertDescription>
-              It manages the chama but can&apos;t join, pay or receive payouts, which keeps admin rights and money apart. To take part
-              yourself, log out and log in with a different personal PayPal account, then join with the invite code.
+              Unitus holds the chama&apos;s money in its own PayPal account, recorded under this chama account. You manage the chama;
+              only Unitus&apos;s automatic rounds move its money. Want to take part too? Join as a member and pay the joining fee.
             </AlertDescription>
           </Alert>
         </CardContent>
-        <CardFooter className="justify-center gap-2">
+        <CardFooter className="flex-wrap justify-center gap-2">
+          <Link href={`/onboarding?code=${created}`} className={buttonVariants({ size: "lg", variant: "outline" })}>
+            Join as a member too
+          </Link>
           <Link href="/dashboard" className={buttonVariants({ size: "lg" })}>
             Go to dashboard
           </Link>
@@ -281,7 +298,7 @@ export function CreateChamaFlow({ defaultStartMonth }: { defaultStartMonth: stri
             <>
               <CardHeader>
                 <CardTitle className="font-heading text-2xl">Start a chama</CardTitle>
-                <CardDescription className="text-base">Name your group and decide how many members go round the merry-go-round.</CardDescription>
+                <CardDescription className="text-base">Name your group, how often it runs and how many members it can take.</CardDescription>
               </CardHeader>
               <CardContent>
                 <FieldGroup className="gap-5">
@@ -296,17 +313,39 @@ export function CreateChamaFlow({ defaultStartMonth }: { defaultStartMonth: stri
                   </Field>
                   <div className="grid gap-5 sm:grid-cols-2">
                     <Field data-invalid={!!err("memberCount")}>
-                      <FieldLabel htmlFor="memberCount">Number of members</FieldLabel>
+                      <FieldLabel htmlFor="memberCount">Maximum members</FieldLabel>
                       <MoneyInput id="memberCount" prefix={null} min={2} max={30} value={f.memberCount} onChange={(v) => set("memberCount", v)} suffix="people" invalid={!!err("memberCount")} />
-                      <FieldDescription>Also the number of months in one cycle.</FieldDescription>
+                      <FieldDescription>It can start with 2; others join while it runs.</FieldDescription>
                       <FieldError>{err("memberCount")}</FieldError>
                     </Field>
-                    <Field data-invalid={!!err("startMonth")}>
-                      <FieldLabel htmlFor="startMonth">First draw</FieldLabel>
-                      <Input id="startMonth" type="month" value={f.startMonth} onChange={(e) => set("startMonth", e.target.value)} className="h-11" aria-invalid={!!err("startMonth")} />
-                      <FieldError>{err("startMonth")}</FieldError>
+                    <Field data-invalid={!!err("startsAt")}>
+                      <FieldLabel htmlFor="startsAt">First round</FieldLabel>
+                      <Input
+                        id="startsAt"
+                        type="datetime-local"
+                        value={toLocalInput(f.startsAt)}
+                        onChange={(e) => set("startsAt", e.target.value ? new Date(e.target.value).toISOString() : "")}
+                        className="h-11"
+                        aria-invalid={!!err("startsAt")}
+                        // Server and browser may format local time differently on first render.
+                        suppressHydrationWarning
+                      />
+                      <FieldDescription>Runs once at least 2 members have paid the joining fee.</FieldDescription>
+                      <FieldError>{err("startsAt")}</FieldError>
                     </Field>
                   </div>
+                  <Field data-invalid={!!err("frequency")}>
+                    <FieldLabel>How often</FieldLabel>
+                    <Choice
+                      label="How often"
+                      value={f.frequency}
+                      onChange={(v) => set("frequency", v)}
+                      className="grid-cols-2 sm:grid-cols-3"
+                      options={frequencies.map((k) => ({ value: k, label: FREQUENCIES[k].label, hint: FREQUENCIES[k].testOnly ? "Sandbox testing" : undefined }))}
+                    />
+                    <FieldDescription>Each round, one member receives the pot and everyone&apos;s savings are collected.</FieldDescription>
+                    <FieldError>{err("frequency")}</FieldError>
+                  </Field>
                 </FieldGroup>
               </CardContent>
             </>
@@ -315,21 +354,23 @@ export function CreateChamaFlow({ defaultStartMonth }: { defaultStartMonth: stri
           {step === 1 && (
             <>
               <CardHeader>
-                <CardTitle className="font-heading text-2xl">Monthly money</CardTitle>
-                <CardDescription className="text-base">What each member pays every month, and the one-time joining fee.</CardDescription>
+                <CardTitle className="font-heading text-2xl">Money per round</CardTitle>
+                <CardDescription className="text-base">
+                  What each member pays every round ({FREQUENCIES[f.frequency].label.toLowerCase()}), and the one-time joining fee.
+                </CardDescription>
               </CardHeader>
               <CardContent>
                 <FieldGroup className="gap-5">
                   <div className="grid gap-5 sm:grid-cols-2">
                     <Field data-invalid={!!err("monthlyContribution")}>
                       <FieldLabel htmlFor="contribution">Merry-go-round contribution</FieldLabel>
-                      <MoneyInput id="contribution" value={f.monthlyContribution} onChange={(v) => set("monthlyContribution", v)} suffix="/ month" invalid={!!err("monthlyContribution")} />
-                      <FieldDescription>All of it goes to that month&apos;s winner.</FieldDescription>
+                      <MoneyInput id="contribution" value={f.monthlyContribution} onChange={(v) => set("monthlyContribution", v)} suffix={`/ ${perRound(f.frequency)}`} invalid={!!err("monthlyContribution")} />
+                      <FieldDescription>All of it goes to that round&apos;s recipient.</FieldDescription>
                       <FieldError>{err("monthlyContribution")}</FieldError>
                     </Field>
                     <Field data-invalid={!!err("monthlySavings")}>
                       <FieldLabel htmlFor="savings">Savings</FieldLabel>
-                      <MoneyInput id="savings" value={f.monthlySavings} onChange={(v) => set("monthlySavings", v)} suffix="/ month" invalid={!!err("monthlySavings")} />
+                      <MoneyInput id="savings" value={f.monthlySavings} onChange={(v) => set("monthlySavings", v)} suffix={`/ ${perRound(f.frequency)}`} invalid={!!err("monthlySavings")} />
                       <FieldDescription>Kept in each member&apos;s savings until share-out.</FieldDescription>
                       <FieldError>{err("monthlySavings")}</FieldError>
                     </Field>
@@ -338,12 +379,6 @@ export function CreateChamaFlow({ defaultStartMonth }: { defaultStartMonth: stri
                       <MoneyInput id="joiningFee" value={f.joiningFee} onChange={(v) => set("joiningFee", v)} invalid={!!err("joiningFee")} />
                       <FieldDescription>Verifies PayPal. Locked in the member&apos;s savings until they leave.</FieldDescription>
                       <FieldError>{err("joiningFee")}</FieldError>
-                    </Field>
-                    <Field data-invalid={!!err("deductionDay")}>
-                      <FieldLabel htmlFor="deductionDay">Auto-deduction day</FieldLabel>
-                      <MoneyInput id="deductionDay" prefix={null} min={1} max={28} value={f.deductionDay} onChange={(v) => set("deductionDay", v)} suffix="of month" invalid={!!err("deductionDay")} />
-                      <FieldDescription>PayPal is charged automatically on this day.</FieldDescription>
-                      <FieldError>{err("deductionDay")}</FieldError>
                     </Field>
                   </div>
                 </FieldGroup>
@@ -428,11 +463,15 @@ export function CreateChamaFlow({ defaultStartMonth }: { defaultStartMonth: stri
               <CardContent className="flex flex-col gap-6">
                 <div className="divide-y rounded-2xl border px-4">
                   <ReviewRow label="Name" value={f.name} />
-                  <ReviewRow label="Members & cycle" value={`${f.memberCount} members · ${monthLabel(f.startMonth)} – ${monthLabel(f.startMonth, f.memberCount - 1)}`} />
-                  <ReviewRow label="Monthly contribution" value={`${money(f.monthlyContribution)} → ${money(f.monthlyContribution * f.memberCount)} payout`} />
-                  <ReviewRow label="Monthly savings" value={money(f.monthlySavings)} />
+                  <ReviewRow label="Members" value={`Up to ${f.memberCount} · starts with 2`} />
+                  <ReviewRow label="Rounds" value={`${FREQUENCIES[f.frequency].label} · first ${when(f)}`} />
+                  <ReviewRow
+                    label="Contribution"
+                    value={`${money(f.monthlyContribution)} / ${perRound(f.frequency)} → up to ${money(f.monthlyContribution * (f.memberCount - 1))} payout`}
+                  />
+                  <ReviewRow label="Savings" value={`${money(f.monthlySavings)} / ${perRound(f.frequency)}`} />
                   <ReviewRow label="Joining fee" value={`${money(f.joiningFee)}, locked until a member leaves`} />
-                  <ReviewRow label="Auto-deduction" value={`${ordinal(f.deductionDay)} of each month`} />
+                  <ReviewRow label="Auto-deduction" value="Every round, from each member's saved PayPal" />
                   <ReviewRow label="Share-out" value={f.shareOut === "year-end" ? "Year end" : "Mid-year"} />
                   <ReviewRow label="Loans" value={`Up to ${f.loanMultiplier}× savings at ${f.loanInterestRate}% flat`} />
                   <ReviewRow label="Payments" value="Through PayPal · withdrawals disabled" />

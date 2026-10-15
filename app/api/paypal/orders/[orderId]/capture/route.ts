@@ -1,7 +1,7 @@
 import { getSession } from "@/lib/auth/session";
 import { markJoiningFeePaid } from "@/lib/chamas";
 import { postPayment } from "@/lib/ledger";
-import { getPaymentByOrder, recordPayment, saveVault } from "@/lib/db";
+import { getPaymentByOrder, recordPayment, saveVault, savePayerDetails } from "@/lib/db";
 import { captureOrder } from "@/lib/paypal/orders";
 import { paypalErrorResponse } from "@/lib/paypal/server";
 
@@ -17,7 +17,7 @@ export async function POST(_request: Request, ctx: RouteContext<"/api/paypal/ord
     if (!payment || payment.member_id !== session.memberId) {
       return Response.json({ error: "Payment not found." }, { status: 404 });
     }
-    const { vaultId, paypalCustomerId, ...result } = await captureOrder(orderId);
+    const { vaultId, paypalCustomerId, payerCountry, payerId, ...result } = await captureOrder(orderId);
     await recordPayment({
       memberId: session.memberId,
       chamaId: payment.chama_id ?? undefined,
@@ -37,6 +37,7 @@ export async function POST(_request: Request, ctx: RouteContext<"/api/paypal/ord
     }
     // Credit the chama's accounts in the ledger (no-op unless COMPLETED; idempotent).
     if (result.status === "COMPLETED") await postPayment(orderId);
+    if (result.status === "COMPLETED") await savePayerDetails(session.memberId, { country: payerCountry, payerId });
     // The joining fee also saves the member's PayPal for monthly auto-deductions.
     if (vaultId) await saveVault(session.memberId, vaultId, paypalCustomerId);
     return Response.json({ ...result, paypalSaved: Boolean(vaultId) });

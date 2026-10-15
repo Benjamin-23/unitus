@@ -9,6 +9,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { money } from "@/lib/chama";
 import type { ChamaPreview } from "@/lib/chamas";
 import { cn } from "@/lib/utils";
+import { perRound } from "@/lib/schedule";
 
 function CopyLink({ code }: { code: string }) {
   const [copied, setCopied] = useState(false);
@@ -81,27 +82,28 @@ export function MyChamas() {
                 <div className="flex flex-col gap-1">
                   <div className="flex flex-wrap items-center gap-2">
                     <span className="font-heading text-lg font-semibold">{c.name}</span>
-                    {c.you?.role === "admin" && <Badge variant="secondary">Admin</Badge>}
+                    {(c.you?.role === "admin" || (c.you?.role === "member" && c.you.isCreator)) && <Badge variant="secondary">Admin</Badge>}
+                    {c.you?.role === "member" && <Badge variant="secondary">Member</Badge>}
                     <Badge variant="outline" className="gap-1">
                       <LockIcon className="size-3" /> Rules locked
                     </Badge>
                     <Badge className={cn("border-0", c.status === "open" ? "bg-accent/30 text-accent-foreground" : "bg-secondary text-primary")}>
-                      {c.status === "open" ? "Accepting members" : c.status === "active" ? "Full · running" : "Closed"}
+                      {c.status === "closed" ? "Closed" : c.status === "active" ? "Running" : "Not started"}
+                      {c.status !== "closed" && c.memberCount < c.memberLimit ? " · accepting members" : ""}
                     </Badge>
                   </div>
                   {c.you?.role === "admin" && (
                     <p className="text-xs text-muted-foreground">
-                      You manage this chama. Admin accounts don&apos;t pay or receive payouts; to take part, log in with a different
-                      PayPal account and join with the invite code.
+                      You manage this chama. To take part too, join it with its invite code and pay the joining fee.
                     </p>
                   )}
                   <p className="text-sm text-muted-foreground">
-                    {c.memberCount} of {c.memberLimit} members · {money(c.rules.monthlyContribution)}/month ·{" "}
+                    {c.memberCount} of {c.memberLimit} members · {money(c.rules.monthlyContribution)} / {perRound(c.frequency)} · {c.status === "active" ? "running" : c.status === "open" ? "not started" : "closed"} ·{" "}
                     <span className="font-mono">{c.inviteCode}</span>
                   </p>
                 </div>
                 <div className="flex flex-wrap items-center gap-2">
-                  {c.status === "open" && <CopyLink code={c.inviteCode} />}
+                  {c.status !== "closed" && c.memberCount < c.memberLimit && <CopyLink code={c.inviteCode} />}
                   {c.you?.role === "member" &&
                     (c.you.joiningFeePaid ? (
                       <span className="flex items-center gap-1 text-sm text-primary">
@@ -112,6 +114,11 @@ export function MyChamas() {
                         Pay joining fee
                       </Link>
                     ))}
+                  {c.you?.role === "admin" && c.status !== "closed" && c.memberCount < c.memberLimit && (
+                    <Link href={`/onboarding?code=${c.inviteCode}`} className={buttonVariants({ size: "sm", variant: "outline" })}>
+                      Join as a member too
+                    </Link>
+                  )}
                 </div>
               </li>
             ))}

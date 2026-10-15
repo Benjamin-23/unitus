@@ -45,7 +45,7 @@ sequenceDiagram
   U-->>M: Signed session cookie (httpOnly, SameSite=Lax, 7 days)
 ```
 
-The member's verified PayPal **email** recorded here is the address payouts are sent to (Flow D). Nobody can type in or change a payout address.
+The member's PayPal payer id (captured on their first payment) is where payouts are sent, falling back to the verified **email** recorded here. Nobody can type in or change a payout address.
 
 ### Flow B: Joining fee + authorizing recurring charges (vault) ✅
 A member authorizes future charges once, by paying the joining fee with PayPal's **vault-with-purchase** flow (JS SDK v6, `paymentFlow: "VAULT_WITH_PAYMENT"`). That single approval both pays the fee into the pool and stores a reusable **payment token** (vault id) for merchant-initiated charges.
@@ -78,59 +78,42 @@ sequenceDiagram
 - The amount always comes from the chama's locked rules on the server; the browser only says *what* it's paying for.
 - The vault id is stored server-side only (Supabase, RLS on, no public access). The browser never sees it.
 
-### Flow C: Monthly contribution, captured into the pool ✅
-On the deduction day the server charges each paid-up member's saved PayPal. There's no buyer interaction: the member agreed when they vaulted in Flow B.
+### Flows C + D: Rounds — collect, draw, pay out ✅
+A chama runs in **rounds** on its chosen schedule: every 30 minutes (sandbox testing only), daily, every 3 days, weekly, every 2 weeks or monthly. A scheduler calls `POST /api/cron/tick` every minute (`pnpm scheduler` locally; a cron service when deployed), protected by `CRON_SECRET`. Code: `lib/rounds.ts`.
 
 ```mermaid
 sequenceDiagram
   autonumber
-  participant J as Scheduler (server job)
+  participant J as Scheduler (every minute)
   participant U as Unitus server
+  participant DB as Supabase
   participant P as PayPal
-  participant DB as Supabase
-  J->>U: Run deductions for period YYYY-MM
-  loop each member with joining fee paid
-    U->>DB: Already collected this period? → skip
-    U->>P: POST /v2/checkout/orders<br/>payment_source.paypal.vault_id, intent CAPTURE<br/>PayPal-Request-Id = deduction-{chama}-{member}-{period}
-    P-->>U: COMPLETED (captured into the pool)
-    U->>DB: payments (monthly_deduction, chama, period)
+  J->>U: POST /api/cron/tick (Bearer CRON_SECRET)
+  U->>P: Check payouts in flight (GET /v1/payments/payouts/{batch})
+  U->>DB: Sent → round paid, post payout to the ledger
+  U->>DB: Chama due? ≥ 2 members paid the joining fee?
+  U->>U: Draw recipient (crypto.getRandomValues) from members not yet paid this cycle
+  U->>DB: Insert round (unique per chama + number: claims it)
+  loop each active member
+    U->>P: POST /v2/checkout/orders with vault_id<br/>PayPal-Request-Id = deduction-{round}-{member}
+    U->>DB: payment (contribution + savings split), post to ledger
   end
+  U->>P: POST /v1/payments/payouts<br/>sender_batch_id = round-{round}, receiver = recipient's PayPal payer id
+  U->>DB: round → paying
 ```
 
-- **Amount** = the chama's `monthly_contribution + monthly_savings` (+ loan instalment 🛠, once loans are stored).
-- **No double charges:** a fixed `PayPal-Request-Id` per chama, member and month. Tested in sandbox: simultaneous and repeated requests return the same order. The ledger check skips anything already collected.
-- **Declines:** a declined charge isn't retried automatically under the same id. 🛠 The member gets a "pay this month manually" prompt (one-time order, Flow B without vaulting).
-- Today the scheduler isn't built 🛠; a sandbox-only button on the dashboard triggers the same route for testing.
+- **Starting:** the first round runs at `starts_at` once **2 members** have paid the joining fee; until then it waits. The chama keeps accepting members while it runs, up to `member_limit`.
+- **Who pays:** each round, every active member except the recipient pays the contribution; everyone pays savings. A member who received **before the recipient joined** doesn't pay into the recipient's round (the recipient never paid them). Over a cycle every member's contributions paid and received net to zero, including late joiners.
+- **Cycles:** a cycle ends when every active member has received once; the next round starts a new cycle with everyone.
+- **Pot** = contributions actually collected in that round. A declined member's share is missing (logged); the round still pays out what was collected.
+- **Exactly once:** the round row is unique per chama and number; deductions reuse a request id per round and member; the payout batch id is the round id. A tick that stops halfway is finished by the next tick.
+- **Late scheduler:** if more than one round behind, the next round runs now instead of several at once.
+- **Payout fee:** PayPal charges the sender (2% in the sandbox). Unitus covers it from `UNT-OPS`; it's recorded on the round and in the ledger.
+- **Ledger:** contributions go to the chama's pot, savings to the member's savings; the payout debits the pot and the pool.
+- **Sandbox:** `pnpm scheduler --once --force <chamaId>` runs a chama's next round immediately. Refused in production.
+- **Declines:** not retried automatically. 🛠 A "pay this round manually" prompt.
 
-### Flow D: Draw and payout to the winner 🛠
-When every member's contribution for the period is **COMPLETED** in the ledger, the server draws a winner and pays them with the **Payouts API** from the pool.
-
-```mermaid
-sequenceDiagram
-  autonumber
-  participant J as Scheduler (server job)
-  participant U as Unitus server
-  participant DB as Supabase
-  participant P as PayPal Payouts API
-  J->>U: Run draw for chama X, period YYYY-MM
-  U->>DB: All members' contributions COMPLETED for the period?
-  U->>DB: Eligible = members who haven't won this cycle
-  U->>U: Pick winner with crypto.getRandomValues
-  U->>DB: draws row (append-only): chama, period, winner, amount, seed
-  U->>P: POST /v1/payments/payouts<br/>sender_batch_id = payout-{chama}-{period}<br/>items[0]: recipient_type EMAIL, receiver = winner's PayPal email,<br/>amount = contribution × members, sender_item_id = draw id
-  P-->>U: payout_batch_id, batch_status PENDING
-  U->>DB: payouts row (PENDING)
-  P-->>U: Webhook: payout item succeeded / unclaimed / failed
-  U->>DB: payouts status → SUCCESS (or flagged for follow-up)
-```
-
-- **Pot** = `monthly_contribution × member_limit`. Savings stay in the pool for the share-out.
-- **Recipient** = the winner's verified email from Flow A. It's never typed in, never editable.
-- **Exactly once:** PayPal rejects a `sender_batch_id` reused within 30 days and returns the original payout; the `draws` table has one row per chama and period, enforced by a unique key, which covers beyond 30 days. 5xx responses are retried with the same `sender_batch_id`.
-- **Status:** poll `GET /v1/payments/payouts/{payout_batch_id}`, and confirm with payout webhooks once a public HTTPS endpoint exists. Item statuses include `SUCCESS`, `UNCLAIMED`, `RETURNED`, `FAILED`, `BLOCKED` and `ONHOLD`; anything but `SUCCESS` is flagged for follow-up and never auto-resent to a different address.
-- **Pool balance:** the payout only runs after that period's contributions are captured, so the pool always holds the pot first.
-
-Savings **share-out** (mid-year / year end) and a **leaving member's** refund reuse Flow D: one batch, one item per member, with amounts from the ledger.
+Savings **share-out** (mid-year / year end) 🛠 and a **leaving member's** refund 🛠 will reuse the payout step: one batch, one item per member, with amounts from the ledger.
 
 ---
 
@@ -167,14 +150,15 @@ Members pay PayPal's transaction fee on top, so each chama receives exactly the 
 ### Admin rights vs financial access
 Group admin rights and the ability to move money are strictly separate. **No person (not a member, not a chama admin, not a Unitus operator using the app) can trigger, redirect or size a payout.**
 
-| Action | Chama admin account | Member | Automated server job |
+Any signed-in member can create a chama; no separate PayPal account is needed (migration 0009). Creating one opens the chama's account inside Unitus (`UNT-<invite code>`); the money itself sits in the Unitus pool. A member can be in as many chamas as they like, and a creator can also join their own chama as an ordinary member.
+
+| Action | As the chama's admin (creator) | As a member | Automated server job |
 |---|:-:|:-:|:-:|
-| Create chama / set rules (once) | ✅ | ✅ (that account becomes its admin) | |
-| Join / be a member of the chama it administers | ❌ (DB trigger rejects) | ✅ | |
+| Create chama / set rules (once) | ✅ | | |
 | Edit rules after creation | ❌ (DB trigger rejects) | ❌ | ❌ |
 | Share invite code/link | ✅ | ✅ | |
-| Pay own joining fee / authorize own vault | ❌ | ✅ | |
-| Receive a payout | ❌ | ✅ (on their turn) | |
+| Pay own joining fee / authorize own vault | only by joining as a member | ✅ | |
+| Receive a payout | only by joining as a member, on their turn | ✅ (on their turn) | |
 | Charge monthly contributions | ❌ | ❌ | ✅ |
 | Choose the winner | ❌ | ❌ | ✅ random, recorded |
 | Trigger or amend a payout | ❌ | ❌ | ✅ |
@@ -183,8 +167,8 @@ Group admin rights and the ability to move money are strictly separate. **No per
 
 How it's enforced:
 - **Rules are immutable in the database:** a trigger rejects any update to a chama except its status.
-- **The admin account is never a member:** `join_chama` refuses it and a trigger rejects any membership row for a chama's creator, so it can't pay in or be drawn for a payout.
-- **Financial endpoints don't accept user sessions.** 🛠 The deduction, draw and payout jobs run behind a server-to-server secret (`CRON_SECRET`), invoked by a scheduler. There is no admin UI for them. The current sandbox "Run it now" button is for development only and must be disabled in production.
+- **Admin rights never include money:** a creator who joins is treated exactly like any member (same charges, same random draw). Nothing an admin can do in the app moves money.
+- **Financial endpoints don't accept user sessions:** deductions, draws and payouts run only in the scheduler tick, behind a server-to-server secret (`CRON_SECRET`). There is no admin UI for them; forcing a round is sandbox-only.
 - **Amounts and recipients are derived, never supplied:** from locked rules, the ledger and the winner's PayPal identity. API inputs only carry ids.
 - **Supabase is server-only:** RLS is on with no policies, the secret key never leaves the server, and the browser never sees vault ids.
 - **Draws are append-only** 🛠 (trigger blocks update/delete), so a result can't be quietly changed.
@@ -196,7 +180,7 @@ How it's enforced:
 - **PayPal's terms:** confirm with PayPal that pooling member funds in one Business account and paying out via Payouts is an approved use. Their multiparty / Commerce Platform products may be required for production.
 - **Payouts in production** needs PayPal's approval, a verified Business account and enough balance.
 - **Log in with PayPal in production** needs PayPal's review of the requested scopes.
-- **Merchant-initiated charges** (Flow C) rely on the member's consent at vaulting: keep the consent screen's wording and the member's opt-in on record.
+- **Merchant-initiated charges** (rounds) rely on the member's consent at vaulting: keep the consent screen's wording and the member's opt-in on record.
 
 ---
 

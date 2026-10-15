@@ -1,4 +1,5 @@
 import { getSession } from "@/lib/auth/session";
+import { isFrequency } from "@/lib/schedule";
 import { chamaErrorResponse, createChama, listMyChamas, type CreateChamaInput } from "@/lib/chamas";
 
 // Creates a chama with the signed-in member as its admin. Rules lock on creation.
@@ -14,11 +15,11 @@ export async function POST(request: Request) {
       name: String(body.name ?? ""),
       description: typeof body.description === "string" ? body.description : undefined,
       memberCount: num(body.memberCount),
-      startMonth: String(body.startMonth ?? ""),
+      startsAt: String(body.startsAt ?? ""),
+      frequency: isFrequency(body.frequency) ? body.frequency : ("" as never),
       monthlyContribution: num(body.monthlyContribution),
       monthlySavings: num(body.monthlySavings),
       joiningFee: num(body.joiningFee),
-      deductionDay: num(body.deductionDay),
       shareOut: body.shareOut === "mid-year" ? "mid-year" : "year-end",
       loanMultiplier: num(body.loanMultiplier),
       loanInterestRate: num(body.loanInterestRate),

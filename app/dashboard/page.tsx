@@ -8,15 +8,15 @@ import { buttonVariants } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Progress } from "@/components/ui/progress";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { LedgerGrid, MembersGrid, ScheduleGrid, StatementGrid } from "@/components/dashboard/grids";
+import { LedgerGrid, MembersGrid, RoundsGrid, ScheduleGrid, StatementGrid } from "@/components/dashboard/grids";
 import { ChamaRules } from "@/components/dashboard/chama-rules";
 import { LeaveChama } from "@/components/dashboard/leave-chama";
 import { MyChamas } from "@/components/dashboard/my-chamas";
-import { RunDeduction } from "@/components/dashboard/run-deduction";
 import { getSession } from "@/lib/auth/session";
 import { PAYPAL_ACCOUNT_URL } from "@/lib/paypal/server";
 import { money } from "@/lib/chama";
-import { getChamaDashboard, listDashboardChamas, monthName } from "@/lib/dashboard";
+import { getChamaDashboard, listDashboardChamas } from "@/lib/dashboard";
+import { FREQUENCIES, formatDue } from "@/lib/schedule";
 import { cn } from "@/lib/utils";
 
 export const metadata: Metadata = { title: "Dashboard · Unitus" };
@@ -54,7 +54,6 @@ const Note = ({ children, className }: { children: React.ReactNode; className?: 
   <p className={cn("text-sm text-muted-foreground", className)}>{children}</p>
 );
 
-const fullDate = (d: string) => new Date(`${d}T00:00:00Z`).toLocaleDateString("en-GB", { day: "numeric", month: "short", year: "numeric", timeZone: "UTC" });
 
 async function Dashboard({ searchParams }: { searchParams: PageProps<"/dashboard">["searchParams"] }) {
   const session = await getSession();
@@ -81,7 +80,7 @@ async function Dashboard({ searchParams }: { searchParams: PageProps<"/dashboard
             <UsersIcon className="size-8 text-muted-foreground" />
             <div>
               <p className="font-heading text-xl font-semibold">You&apos;re not in a chama yet</p>
-              <Note>Join one with an invite link or code, or start one from a separate PayPal account.</Note>
+              <Note>Join one with an invite link or code, or start your own. You can be in as many chamas as you like.</Note>
             </div>
             <div className="flex flex-wrap justify-center gap-2">
               <Link href="/onboarding" className={buttonVariants({ size: "lg" })}>
@@ -101,11 +100,15 @@ async function Dashboard({ searchParams }: { searchParams: PageProps<"/dashboard
   const d = await getChamaDashboard(selected.id, session.memberId);
   if (!d) redirect("/dashboard");
 
-  const { chama, you, pool, cycle, next, members, period } = d;
+  const { chama, you, pool, cycle, next, members, frequency } = d;
   const isAdmin = d.role === "admin";
-  const started = period >= cycle.start;
-  const paidThisMonth = members.filter((m) => m.paidThisMonth).length;
-  const drawsRemaining = cycle.drawsTotal - cycle.drawsDone;
+  const started = d.rounds.length > 0;
+  const lastRound = d.rounds[0];
+  const when = (iso: string) => formatDue(iso, frequency);
+  const paidLastRound = members.filter((m) => m.feePaid && m.paidLastRound).length;
+  // A member may leave once everyone in the current cycle has received.
+  const drawsRemaining = Math.max(0, cycle.members - cycle.received);
+  const fullPot = Number(chama.monthly_contribution) * Math.max(1, d.activeMembers - 1);
 
   return (
     <>
@@ -117,7 +120,7 @@ async function Dashboard({ searchParams }: { searchParams: PageProps<"/dashboard
             savings={you.savings}
             joiningFee={you.lockedJoiningFee}
             drawsRemaining={drawsRemaining}
-            cycleEnd={monthName(cycle.end)}
+            cycleEnd={`the end of cycle ${cycle.number}`}
           />
         )}
       </div>
@@ -134,7 +137,7 @@ async function Dashboard({ searchParams }: { searchParams: PageProps<"/dashboard
               className={cn(buttonVariants({ variant: c.id === chama.id ? "default" : "outline" }), "h-9 rounded-full")}
             >
               {c.name}
-              <span className="text-xs opacity-75">{c.role === "admin" ? "Admin" : "Member"}</span>
+              <span className="text-xs opacity-75">{c.label}</span>
             </Link>
           ))}
         </nav>
@@ -142,7 +145,13 @@ async function Dashboard({ searchParams }: { searchParams: PageProps<"/dashboard
 
       <div className="flex flex-wrap items-center gap-2">
         <h2 className="font-heading text-2xl font-semibold tracking-tight">{chama.name}</h2>
-        <Badge variant="secondary">{isAdmin ? "You're the admin" : "You're a member"}</Badge>
+        <Badge variant="secondary">
+          {d.isCreator && !isAdmin ? "You're the admin and a member" : isAdmin ? "You're the admin" : "You're a member"}
+        </Badge>
+        <Badge variant="outline">{chama.status === "open" ? "Not started" : chama.status === "active" ? "Running" : "Closed"}</Badge>
+        <Badge variant="outline" className="gap-1">
+          <RefreshCwIcon className="size-3" /> {FREQUENCIES[frequency].label}
+        </Badge>
         <Badge variant="outline" className="gap-1">
           <LockIcon className="size-3" /> Rules locked
         </Badge>
@@ -156,22 +165,25 @@ async function Dashboard({ searchParams }: { searchParams: PageProps<"/dashboard
           <>
             <Stat icon={UsersIcon} label="Members" value={`${members.length} of ${chama.member_limit}`}>
               <Progress value={(members.length / chama.member_limit) * 100} className="[&_[data-slot=progress-track]]:h-2" />
-              <Note>{members.filter((m) => m.feePaid).length} have paid the joining fee</Note>
+              <Note>
+                {d.activeMembers} paid the joining fee{d.activeMembers < 2 ? " · needs 2 to start" : ""}
+                {members.length < chama.member_limit ? " · still open to join" : " · full"}
+              </Note>
             </Stat>
             <Stat icon={WalletIcon} label="Chama account balance" value={money(pool.balance)}>
               <Note>
-                {money(pool.joiningFees)} joining fees · {money(pool.savings)} savings · {money(pool.contributions)} contributions
+                {money(pool.joiningFees)} joining fees · {money(pool.savings)} savings · {money(pool.contributions - pool.payouts)} in the pot
               </Note>
               <Note className="text-xs">
-                Members paid {money(pool.feesCharged)} in PayPal fees on top; PayPal took {money(pool.paypalFees)}.
+                {money(pool.payouts)} paid out · members paid {money(pool.feesCharged)} in PayPal fees on top
               </Note>
             </Stat>
             <Stat
               icon={CalendarClockIcon}
-              label={started ? `${monthName(period)} collection` : "Collections"}
-              value={started ? `${paidThisMonth} of ${members.length} paid` : `From ${monthName(cycle.start)}`}
+              label={started ? `Round ${lastRound.number} collection` : "Collections"}
+              value={started ? `${paidLastRound} of ${d.activeMembers} paid` : "Not started"}
             >
-              <Note>{next ? `Next deduction day: ${fullDate(next.date)}` : "This cycle's collections are complete"}</Note>
+              <Note>{next ? `${next.waiting ? "Waiting for 2 paid members · " : ""}Next round: ${when(next.date)}` : "This chama is closed"}</Note>
             </Stat>
           </>
         ) : (
@@ -187,9 +199,10 @@ async function Dashboard({ searchParams }: { searchParams: PageProps<"/dashboard
             </Stat>
             <Stat icon={CoinsIcon} label="Contributions paid" value={money(you?.contributed ?? 0)}>
               <Note>
-                {members.find((m) => m.isYou)?.months ?? 0} months ·{" "}
-                {started ? (you?.paidThisMonth ? `${monthName(period)} paid` : `${monthName(period)} not paid yet`) : `starts ${monthName(cycle.start)}`}
+                {members.find((m) => m.isYou)?.rounds ?? 0} rounds ·{" "}
+                {started ? (you?.paidLastRound ? `round ${lastRound.number} paid` : `round ${lastRound.number} not paid`) : "not started yet"}
               </Note>
+              <Note>{you?.receivedThisCycle ? "You've received the pot this cycle" : "You haven't received the pot this cycle yet"}</Note>
               {!you?.feePaid && (
                 <Link href={`/onboarding?code=${chama.invite_code}`} className={cn(buttonVariants({ size: "sm" }), "w-fit")}>
                   Pay joining fee
@@ -199,38 +212,40 @@ async function Dashboard({ searchParams }: { searchParams: PageProps<"/dashboard
           </>
         )}
 
-        <Stat icon={RefreshCwIcon} label="Merry-go-round" value={`${cycle.drawsDone} of ${cycle.drawsTotal} drawn`}>
-          <Progress value={(cycle.drawsDone / cycle.drawsTotal) * 100} className="[&_[data-slot=progress-track]]:h-2" />
+        <Stat icon={RefreshCwIcon} label={`Merry-go-round · cycle ${cycle.number}`} value={`${cycle.received} of ${cycle.members} received`}>
+          <Progress value={cycle.members ? (cycle.received / cycle.members) * 100 : 0} className="[&_[data-slot=progress-track]]:h-2" />
           <Note>
-            {members.length < chama.member_limit
-              ? `Waiting for ${chama.member_limit - members.length} more member${chama.member_limit - members.length === 1 ? "" : "s"} · first draw ${monthName(cycle.start)}`
-              : `First draw ${monthName(cycle.start)} · payout ${money(Number(chama.monthly_contribution) * chama.member_limit)}`}
+            {lastRound
+              ? `Last: ${lastRound.recipient}${lastRound.isYou ? " (you)" : ""}${lastRound.pot ? ` · ${money(lastRound.pot)}` : ""}`
+              : `First round ${when(chama.starts_at)} once 2 members have paid`}
           </Note>
+          <Note className="text-xs">Pot now about {money(fullPot)} each round with {d.activeMembers} paid members</Note>
         </Stat>
 
         {!isAdmin && (
           <Stat
             icon={CalendarClockIcon}
-            label="Next auto-deduction"
-            value={next ? money(next.total) : "—"}
+            label={next ? `Next auto-deduction · round ${next.number}` : "Next auto-deduction"}
+            value={next && you?.feePaid ? money(next.total) : "—"}
             className="bg-band text-band-foreground [&_[data-slot=card-description]]:text-band-foreground/75"
           >
-            <p className="text-sm text-band-foreground/80">{next ? `${fullDate(next.date)} from your PayPal` : "No more deductions this cycle"}</p>
-            {next && (
+            <p className="text-sm text-band-foreground/80">
+              {!next ? "No more rounds" : !you?.feePaid ? "Pay the joining fee to take part" : `${when(next.date)} from your PayPal${next.waiting ? " (once 2 members have paid)" : ""}`}
+            </p>
+            {next && you?.feePaid && (
               <>
                 <p className="text-xs text-band-foreground/70">
-                  {money(next.contribution)} contribution · {money(next.savings)} savings · {money(next.fee)} PayPal fee
+                  {money(next.contribution)} contribution · {money(next.savings)} savings · {money(next.fee)} PayPal fee. If you&apos;re drawn,
+                  only {money(next.ifDrawn)}.
                 </p>
                 <p className="rounded-xl bg-band-foreground/10 px-3 py-2 text-xs text-band-foreground/90">
-                  Make sure {money(next.total)} is available in your PayPal by {fullDate(next.date)}.{" "}
+                  Make sure {money(next.total)} is available in your PayPal by {when(next.date)}.{" "}
                   <a href={PAYPAL_ACCOUNT_URL} target="_blank" rel="noopener noreferrer" className="font-semibold underline underline-offset-2">
                     Check my PayPal balance ↗
                   </a>
                 </p>
               </>
             )}
-            {/* Sandbox testing only: in production a scheduler collects contributions. */}
-            {process.env.PAYPAL_ENVIRONMENT !== "production" && you?.feePaid && <RunDeduction />}
           </Stat>
         )}
       </section>
@@ -239,13 +254,13 @@ async function Dashboard({ searchParams }: { searchParams: PageProps<"/dashboard
         chama={chama}
         cycle={cycle}
         accountBalance={pool.balance}
-        canDelete={isAdmin}
+        canDelete={d.isCreator}
         snapshot={{
-          memberCount: members.length,
-          membersPaidOut: cycle.drawsDone,
+          memberCount: cycle.members,
+          membersPaidOut: cycle.received,
           savingsHeld: pool.joiningFees + pool.savings,
           loansOutstanding: 0,
-          pendingDeductions: started && next ? members.length - paidThisMonth : 0,
+          pendingDeductions: started ? d.activeMembers - paidLastRound : 0,
         }}
       />
 
@@ -295,16 +310,20 @@ async function Dashboard({ searchParams }: { searchParams: PageProps<"/dashboard
         </CardHeader>
         <CardContent>
           <Tabs defaultValue={d.account.fromLedger ? "statement" : "ledger"} className="gap-5">
-            <TabsList className="h-10! w-full max-w-lg rounded-xl p-1 sm:w-fit">
+            <TabsList className="h-10! w-full max-w-2xl rounded-xl p-1 sm:w-fit">
               {d.account.fromLedger && (
                 <TabsTrigger value="statement" className="px-4">Statement</TabsTrigger>
               )}
+              <TabsTrigger value="rounds" className="px-4">Rounds</TabsTrigger>
               <TabsTrigger value="ledger" className="px-4">Payments</TabsTrigger>
               <TabsTrigger value="members" className="px-4">Members</TabsTrigger>
               <TabsTrigger value="schedule" className="px-4">Upcoming</TabsTrigger>
             </TabsList>
             <TabsContent value="statement">
               <StatementGrid rows={d.account.statement} />
+            </TabsContent>
+            <TabsContent value="rounds">
+              <RoundsGrid rows={d.rounds} />
             </TabsContent>
             <TabsContent value="ledger">
               <LedgerGrid rows={d.ledger} />

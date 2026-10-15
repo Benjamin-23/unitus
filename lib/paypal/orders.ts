@@ -10,6 +10,7 @@ export type OrderPurpose = { purpose: "joining-fee"; chamaId: string } | { purpo
 type Order = {
   id: string;
   status: string;
+  payer?: { payer_id?: string; address?: { country_code?: string } };
   payment_source?: {
     paypal?: {
       email_address?: string;
@@ -136,45 +137,33 @@ export async function captureOrder(orderId: string) {
     status: order.status,
     ...captureFigures(order),
     payerEmail: order.payment_source?.paypal?.email_address,
+    payerCountry: order.payer?.address?.country_code,
+    payerId: order.payer?.payer_id,
     vaultId: order.payment_source?.paypal?.attributes?.vault?.id,
     paypalCustomerId: order.payment_source?.paypal?.attributes?.vault?.customer?.id,
   };
 }
 
-export type DeductionChama = { id: string; name: string; monthlyContribution: number; monthlySavings: number };
-
-/** "YYYY-MM" for the month a deduction belongs to (UTC). */
-export function deductionPeriod(date = new Date()) {
-  return date.toISOString().slice(0, 7);
-}
-
 /**
- * Charges a member's monthly deduction for one chama (contribution + savings)
- * to their saved PayPal. No buyer approval needed: the member agreed when they
- * saved their PayPal. A scheduler would call this on the deduction day.
+ * Charges a member's share of one round to their saved PayPal: the
+ * contribution (to that round's recipient) and/or savings, plus the PayPal fee.
+ * No buyer approval: the member agreed when they saved their PayPal.
  *
- * The PayPal-Request-Id is fixed per chama, member and month, so a repeat call
- * (double click, scheduler re-run, network retry) is the same payment to
- * PayPal and can never charge twice.
+ * The PayPal-Request-Id is fixed per round and member, so a scheduler re-run or
+ * network retry is the same payment to PayPal and can never charge twice.
  */
 // TODO(backend): add loan instalments once loans are stored in the database.
-export async function chargeMonthlyDeduction(
+export async function chargeRoundDeduction(
   vaultId: string,
-  chama: DeductionChama,
-  { memberId, period }: { memberId: string; period: string },
+  chama: { id: string; name: string },
+  { memberId, roundId, label, contribution, savings }: { memberId: string; roundId: string; label: string; contribution: number; savings: number },
 ) {
-  const lines = [
-    { name: "Merry-go-round contribution", amount: chama.monthlyContribution },
-    { name: "Savings", amount: chama.monthlySavings },
-  ];
-  const { unit: purchaseUnit, charge } = chamaUnit(
-    `monthly-${period}`,
-    `${chama.id}:monthly:${period}`,
-    `${chama.name} · ${period} contribution`,
-    lines,
-  );
+  const { unit: purchaseUnit, charge } = chamaUnit(`round-${roundId}`.slice(0, 256), `${chama.id}:round:${roundId}`, `${chama.name} · ${label}`, [
+    { name: "Merry-go-round contribution", amount: contribution },
+    { name: "Savings", amount: savings },
+  ]);
   const order = await paypalRequest<Order>("/v2/checkout/orders", {
-    requestId: `deduction-${chama.id}-${memberId}-${period}`,
+    requestId: `deduction-${roundId}-${memberId}`,
     body: {
       intent: "CAPTURE",
       purchase_units: [purchaseUnit],
@@ -182,5 +171,13 @@ export async function chargeMonthlyDeduction(
     },
   });
   const figures = captureFigures(order);
-  return { orderId: order.id, status: order.status, charge, ...figures, amount: figures.amount ?? charge.total.toFixed(2) };
+  return {
+    orderId: order.id,
+    status: order.status,
+    charge,
+    ...figures,
+    amount: figures.amount ?? charge.total.toFixed(2),
+    payerCountry: order.payer?.address?.country_code,
+    payerId: order.payer?.payer_id,
+  };
 }

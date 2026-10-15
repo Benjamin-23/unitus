@@ -65,7 +65,7 @@ export function LeaveChama({
             <span>Paid to your PayPal</span>
             <span className="font-heading text-lg">{money(payout)}</span>
           </div>
-          <p className="mt-2 text-xs text-muted-foreground">Figures are as of today and grow with each monthly contribution.</p>
+          <p className="mt-2 text-xs text-muted-foreground">Figures are as of today and grow with each round.</p>
         </div>
         <DialogFooter>
           <DialogClose render={<Button variant="outline" />}>Stay in the chama</DialogClose>
