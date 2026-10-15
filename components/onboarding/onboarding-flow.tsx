@@ -349,8 +349,8 @@ export function OnboardingFlow() {
             ) : (
               <Alert>
                 <AlertDescription>
-                  PayPal didn&apos;t save your account for automatic payments. You can still continue, and we&apos;ll ask you to approve each
-                  round instead.
+                  PayPal is still finishing saving your account for automatic payments; this usually takes a few minutes. Your dashboard
+                  shows when it&apos;s ready. Until then you won&apos;t be charged or drawn in rounds.
                 </AlertDescription>
               </Alert>
             )}

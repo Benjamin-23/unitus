@@ -2,7 +2,8 @@ import { Suspense } from "react";
 import type { Metadata } from "next";
 import Link from "next/link";
 import { redirect } from "next/navigation";
-import { CalendarClockIcon, CoinsIcon, DownloadIcon, LandmarkIcon, LockIcon, PiggyBankIcon, PlusIcon, RefreshCwIcon, UsersIcon, WalletIcon } from "lucide-react";
+import { CalendarClockIcon, CoinsIcon, DownloadIcon, LandmarkIcon, LockIcon, PartyPopperIcon, PiggyBankIcon, PlusIcon, RefreshCwIcon, TrophyIcon, UsersIcon, WalletIcon } from "lucide-react";
+import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
 import { buttonVariants } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
@@ -15,7 +16,7 @@ import { MyChamas } from "@/components/dashboard/my-chamas";
 import { getSession } from "@/lib/auth/session";
 import { PAYPAL_ACCOUNT_URL } from "@/lib/paypal/server";
 import { money } from "@/lib/chama";
-import { getChamaDashboard, listDashboardChamas } from "@/lib/dashboard";
+import { getChamaDashboard, listDashboardChamas, type PotsWon } from "@/lib/dashboard";
 import { FREQUENCIES, formatDue } from "@/lib/schedule";
 import { cn } from "@/lib/utils";
 
@@ -160,13 +161,26 @@ async function Dashboard({ searchParams }: { searchParams: PageProps<"/dashboard
         </Badge>
       </div>
 
+      {you?.feePaid && !you.autoPay && (
+        <Alert>
+          <CalendarClockIcon />
+          <AlertTitle>Automatic payments aren&apos;t ready yet</AlertTitle>
+          <AlertDescription>
+            PayPal is still finishing saving your PayPal for automatic payments. Until it&apos;s ready you won&apos;t be charged or drawn
+            in rounds. This usually takes a few minutes after paying the joining fee.
+          </AlertDescription>
+        </Alert>
+      )}
+
+      {you && you.pots.wins.length > 0 && <PotBanner pots={you.pots} when={when} />}
+
       <section className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
         {isAdmin ? (
           <>
             <Stat icon={UsersIcon} label="Members" value={`${members.length} of ${chama.member_limit}`}>
               <Progress value={(members.length / chama.member_limit) * 100} className="[&_[data-slot=progress-track]]:h-2" />
               <Note>
-                {d.activeMembers} paid the joining fee{d.activeMembers < 2 ? " · needs 2 to start" : ""}
+                {d.activeMembers} ready for automatic payments{d.activeMembers < 2 ? " · needs 2 to run" : ""}
                 {members.length < chama.member_limit ? " · still open to join" : " · full"}
               </Note>
             </Stat>
@@ -183,7 +197,7 @@ async function Dashboard({ searchParams }: { searchParams: PageProps<"/dashboard
               label={started ? `Round ${lastRound.number} collection` : "Collections"}
               value={started ? `${paidLastRound} of ${d.activeMembers} paid` : "Not started"}
             >
-              <Note>{next ? `${next.waiting ? "Waiting for 2 paid members · " : ""}Next round: ${when(next.date)}` : "This chama is closed"}</Note>
+              <Note>{next ? `${next.waiting ? "Waiting for 2 members with automatic payments · " : ""}Next round: ${when(next.date)}` : "This chama is closed"}</Note>
             </Stat>
           </>
         ) : (
@@ -195,6 +209,12 @@ async function Dashboard({ searchParams }: { searchParams: PageProps<"/dashboard
               <Note>
                 {money(you?.savings ?? 0)} savings, shared out {chama.share_out === "year-end" ? "at year end" : "mid-year"}
               </Note>
+              {you && you.pots.paid + you.pots.onTheWay > 0 && (
+                <Note className="flex items-center gap-1.5 font-medium text-primary">
+                  <TrophyIcon className="size-3.5" /> {money(you.pots.paid + you.pots.onTheWay)} pot won
+                  {you.pots.onTheWay > 0 ? `, ${money(you.pots.onTheWay)} on its way` : ""} · paid to your PayPal
+                </Note>
+              )}
               <Note className="text-xs">PayPal fees you&apos;ve paid on top: {money(you?.feesPaid ?? 0)}</Note>
             </Stat>
             <Stat icon={CoinsIcon} label="Contributions paid" value={money(you?.contributed ?? 0)}>
@@ -202,7 +222,7 @@ async function Dashboard({ searchParams }: { searchParams: PageProps<"/dashboard
                 {members.find((m) => m.isYou)?.rounds ?? 0} rounds ·{" "}
                 {started ? (you?.paidLastRound ? `round ${lastRound.number} paid` : `round ${lastRound.number} not paid`) : "not started yet"}
               </Note>
-              <Note>{you?.receivedThisCycle ? "You've received the pot this cycle" : "You haven't received the pot this cycle yet"}</Note>
+              <Note>{you?.receivedThisCycle ? "Your turn for the pot has come this cycle" : "Your turn for the pot is still to come this cycle"}</Note>
               {!you?.feePaid && (
                 <Link href={`/onboarding?code=${chama.invite_code}`} className={cn(buttonVariants({ size: "sm" }), "w-fit")}>
                   Pay joining fee
@@ -230,7 +250,7 @@ async function Dashboard({ searchParams }: { searchParams: PageProps<"/dashboard
             className="bg-band text-band-foreground [&_[data-slot=card-description]]:text-band-foreground/75"
           >
             <p className="text-sm text-band-foreground/80">
-              {!next ? "No more rounds" : !you?.feePaid ? "Pay the joining fee to take part" : `${when(next.date)} from your PayPal${next.waiting ? " (once 2 members have paid)" : ""}`}
+              {!next ? "No more rounds" : !you?.feePaid ? "Pay the joining fee to take part" : `${when(next.date)} from your PayPal${next.waiting ? " (once 2 members have automatic payments ready)" : ""}`}
             </p>
             {next && you?.feePaid && (
               <>
@@ -338,6 +358,48 @@ async function Dashboard({ searchParams }: { searchParams: PageProps<"/dashboard
         </CardContent>
       </Card>
     </>
+  );
+}
+
+/** Shown to a member who has won the pot: how much, and where the money is. */
+function PotBanner({ pots, when }: { pots: PotsWon; when: (iso: string) => string }) {
+  const last = pots.wins[0];
+  const total = pots.paid + pots.onTheWay;
+  const message =
+    last.status === "collecting"
+      ? `You're the recipient of round ${last.round}! Contributions are being collected now; the pot goes to your PayPal straight after.`
+      : last.status === "paying"
+        ? `You won round ${last.round}: ${money(last.amount)} is on its way to your PayPal. It usually arrives within a few minutes.`
+        : last.status === "paid"
+          ? `You won round ${last.round}: ${money(last.amount)} was paid to your PayPal on ${when(last.date)}.`
+          : last.status === "payout_failed"
+            ? `You won round ${last.round}, but PayPal couldn't send the ${money(last.amount)}. It's held safely in the chama's account; Unitus will follow up.`
+            : `You were drawn for round ${last.round}, but no contributions were collected that round.`;
+  return (
+    <Card className="rounded-3xl border-primary/30 bg-secondary/60">
+      <CardContent className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
+        <div className="flex items-start gap-3">
+          <div className="flex size-11 shrink-0 items-center justify-center rounded-2xl bg-primary text-primary-foreground">
+            <PartyPopperIcon className="size-5" />
+          </div>
+          <div className="flex flex-col gap-1">
+            <p className="font-heading text-lg font-semibold">{message}</p>
+            <p className="text-sm text-muted-foreground">
+              Pot won in this chama: {money(total)} across {pots.wins.length} round{pots.wins.length === 1 ? "" : "s"}
+              {pots.onTheWay > 0 ? ` (${money(pots.onTheWay)} still on its way)` : ""}.
+            </p>
+          </div>
+        </div>
+        {last.status !== "no_pot" && (
+          <div className="flex shrink-0 flex-col items-start gap-2 sm:items-end">
+            <p className="font-heading text-3xl font-semibold text-primary">{money(last.amount)}</p>
+            <a href={PAYPAL_ACCOUNT_URL} target="_blank" rel="noopener noreferrer" className={cn(buttonVariants({ size: "sm", variant: "outline" }))}>
+              Check my PayPal balance ↗
+            </a>
+          </div>
+        )}
+      </CardContent>
+    </Card>
   );
 }
 

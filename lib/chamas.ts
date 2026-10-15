@@ -213,7 +213,9 @@ export async function markJoiningFeePaid(chamaId: string, memberId: string) {
     .from("chama_members")
     .update({ joining_fee_paid_at: new Date().toISOString() })
     .eq("chama_id", chamaId)
-    .eq("member_id", memberId);
+    .eq("member_id", memberId)
+    // Keep the first time: it decides which rounds a member takes part in.
+    .is("joining_fee_paid_at", null);
   if (error) throw new Error(`Database error: ${error.message}`);
 }
 

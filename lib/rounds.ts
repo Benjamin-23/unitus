@@ -47,6 +47,10 @@ export async function listRounds(chamaId: string) {
   return check(await db().from("chama_rounds").select("*").eq("chama_id", chamaId).order("number")) as RoundRow[];
 }
 
+/**
+ * Members who take part in a round: joining fee paid by `at`, and PayPal saved
+ * for automatic payments (otherwise they can't be charged).
+ */
 async function activeMembers(chamaId: string, at: Date) {
   const rows = check(
     await db()
@@ -55,8 +59,19 @@ async function activeMembers(chamaId: string, at: Date) {
       .eq("chama_id", chamaId)
       .not("joining_fee_paid_at", "is", null),
   ) as unknown as Membership[];
-  return rows.filter((m) => new Date(m.joining_fee_paid_at!) <= at);
+  const paid = rows.filter((m) => new Date(m.joining_fee_paid_at!) <= at);
+  const ready = await membersWithSavedPayPal(paid.map((m) => m.member_id));
+  return paid.filter((m) => ready.has(m.member_id));
 }
+
+export async function membersWithSavedPayPal(memberIds: string[]) {
+  if (memberIds.length === 0) return new Set<string>();
+  const rows = check(await db().from("paypal_vaults").select("member_id").in("member_id", memberIds)) as { member_id: string }[];
+  return new Set(rows.map((r) => r.member_id));
+}
+
+/** A round counts as the recipient's turn unless nothing was collected for it. */
+export const usedTurn = (r: Pick<RoundRow, "status">) => r.status !== "no_pot";
 
 /** When the chama's next round is due, given the rounds so far. */
 export function nextRoundDue(chama: ChamaRow, rounds: RoundRow[], now = new Date()) {
@@ -72,7 +87,7 @@ export function nextRoundDue(chama: ChamaRow, rounds: RoundRow[], now = new Date
 export function contributorsFor(round: Pick<RoundRow, "cycle" | "recipient_id">, members: Membership[], rounds: RoundRow[]) {
   const recipientJoined = new Date(members.find((m) => m.member_id === round.recipient_id)?.joining_fee_paid_at ?? 0);
   const receivedBeforeRecipientJoined = new Set(
-    rounds.filter((r) => r.cycle === round.cycle && new Date(r.created_at) < recipientJoined).map((r) => r.recipient_id),
+    rounds.filter((r) => r.cycle === round.cycle && usedTurn(r) && new Date(r.created_at) < recipientJoined).map((r) => r.recipient_id),
   );
   return members.filter((m) => m.member_id !== round.recipient_id && !receivedBeforeRecipientJoined.has(m.member_id)).map((m) => m.member_id);
 }
@@ -206,13 +221,15 @@ async function runChama(chama: ChamaRow, now: Date, force: boolean, log: Log) {
 
   const members = await activeMembers(chama.id, now);
   if (members.length < MIN_MEMBERS_TO_RUN) {
-    log(`${chama.name}: round due but only ${members.length} paid member${members.length === 1 ? "" : "s"}; waiting for ${MIN_MEMBERS_TO_RUN}`);
+    log(
+      `${chama.name}: round due but only ${members.length} member${members.length === 1 ? "" : "s"} with automatic payments ready; waiting for ${MIN_MEMBERS_TO_RUN}`,
+    );
     return;
   }
 
   // Draw from members who haven't received this cycle; when everyone has, a new cycle starts.
   let cycle = last?.cycle ?? 1;
-  const received = new Set(rounds.filter((r) => r.cycle === cycle).map((r) => r.recipient_id));
+  const received = new Set(rounds.filter((r) => r.cycle === cycle && usedTurn(r)).map((r) => r.recipient_id));
   let eligible = members.filter((m) => !received.has(m.member_id));
   if (eligible.length === 0) {
     cycle += 1;

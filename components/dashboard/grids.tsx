@@ -27,7 +27,7 @@ const fmtPeriod = (p: ValueFormatterParams) => {
 function StatusBadge({ value }: { value: string }) {
   const label = value === "COMPLETED" ? "Completed" : value.charAt(0) + value.slice(1).toLowerCase();
   const tone =
-    value === "COMPLETED" || value === "Paid" || value === "Received" || value === "Running"
+    value === "COMPLETED" || value === "Paid" || value === "Received" || value === "Running" || value === "Ready"
       ? "bg-secondary text-primary"
       : ["DENIED", "DECLINED", "FAILED", "Not paid"].includes(value)
         ? "bg-destructive/10 text-destructive"
@@ -116,12 +116,25 @@ const memberCols: ColDef<MemberRow>[] = [
     cellRenderer: (p: ICellRendererParams) => <StatusBadge value={p.value ? "Paid" : "Not paid"} />,
   },
   {
+    field: "autoPay",
+    headerName: "Auto-pay",
+    maxWidth: 140,
+    cellRenderer: (p: ICellRendererParams<MemberRow>) => <StatusBadge value={!p.data?.feePaid ? "Not paid" : p.value ? "Ready" : "PENDING"} />,
+  },
+  {
     field: "receivedThisCycle",
     headerName: "This cycle",
     maxWidth: 150,
     cellRenderer: (p: ICellRendererParams) => <StatusBadge value={p.value ? "Received" : "Waiting"} />,
   },
   { field: "rounds", headerName: "Rounds paid", type: "rightAligned", maxWidth: 140 },
+  {
+    field: "potReceived",
+    headerName: "Pot received",
+    type: "rightAligned",
+    maxWidth: 150,
+    cellRenderer: (p: ICellRendererParams) => (p.value ? <span className="font-semibold text-primary tabular-nums">{money(p.value)}</span> : "—"),
+  },
   { field: "contributed", headerName: "Contributed", valueFormatter: fmtMoney, type: "rightAligned", maxWidth: 150 },
   { field: "savings", headerName: "Savings", valueFormatter: fmtMoney, type: "rightAligned", maxWidth: 140 },
   {

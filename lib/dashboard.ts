@@ -3,7 +3,7 @@ import type { ChamaRow } from "@/lib/chamas";
 import { db } from "@/lib/db";
 import { withFee } from "@/lib/fees";
 import { chamaAccountNumber, chamaAccounts, chamaStatement, type LedgerAccount, type StatementRow } from "@/lib/ledger";
-import { listRounds, MIN_MEMBERS_TO_RUN, nextRoundDue, type RoundStatus } from "@/lib/rounds";
+import { listRounds, membersWithSavedPayPal, MIN_MEMBERS_TO_RUN, nextRoundDue, usedTurn, type RoundStatus } from "@/lib/rounds";
 import { addRounds, isFrequency, type Frequency } from "@/lib/schedule";
 
 type PaymentRow = {
@@ -48,6 +48,10 @@ export type MemberRow = {
   paidLastRound: boolean;
   /** Has received the pot in the current cycle. */
   receivedThisCycle: boolean;
+  /** Pots paid to this member's PayPal (all cycles). */
+  potReceived: number;
+  /** PayPal saved for automatic payments, so rounds can charge and include them. */
+  autoPay: boolean;
   /** Rounds they've paid into. */
   rounds: number;
   contributed: number;
@@ -115,6 +119,13 @@ export type ChamaDashboard = {
     receivedThisCycle: boolean;
     received: number;
     feePaid: boolean;
+    autoPay: boolean;
+    /** Pots won: paid to your PayPal, and on the way. */
+    pots: {
+      paid: number;
+      onTheWay: number;
+      wins: { round: number; cycle: number; amount: number; status: RoundStatus; payoutStatus: string | null; date: string }[];
+    };
   } | null;
   /** The next round. `waiting` when there aren't enough paid members yet. */
   next: {
@@ -138,6 +149,9 @@ export type ChamaDashboard = {
     statement: StatementRow[];
   };
 };
+
+/** A member's pots won in one chama. */
+export type PotsWon = NonNullable<ChamaDashboard["you"]>["pots"];
 
 /** Ledger accounts and statement, or null if the ledger isn't set up yet (migration 0006). */
 async function loadLedger(chamaId: string, viewerId: string) {
@@ -245,8 +259,10 @@ export async function getChamaDashboard(chamaId: string, memberId: string, now =
   const last = roundRows.at(-1);
   const cycleNumber = last?.cycle ?? 1;
   const cycleRounds = roundRows.filter((r) => r.cycle === cycleNumber);
-  const receivedThisCycle = new Set(cycleRounds.map((r) => r.recipient_id));
-  const active = memberships.filter((m) => m.joining_fee_paid_at);
+  const receivedThisCycle = new Set(cycleRounds.filter(usedTurn).map((r) => r.recipient_id));
+  const ready = await membersWithSavedPayPal(memberships.map((m) => m.member_id));
+  // Members who take part in rounds: joining fee paid and PayPal saved for automatic payments.
+  const active = memberships.filter((m) => m.joining_fee_paid_at && ready.has(m.member_id));
   const lastRoundLabel = last ? `Round ${last.number}` : null;
 
   const members: MemberRow[] = memberships.map((m) => {
@@ -263,6 +279,8 @@ export async function getChamaDashboard(chamaId: string, memberId: string, now =
       feePaid: Boolean(m.joining_fee_paid_at),
       paidLastRound: !lastRoundLabel || mine.some((p) => p.reference === lastRoundLabel),
       receivedThisCycle: receivedThisCycle.has(m.member_id),
+      autoPay: ready.has(m.member_id),
+      potReceived: round2(roundRows.filter((r) => r.recipient_id === m.member_id && r.status === "paid").reduce((s, r) => s + Number(r.pot ?? 0), 0)),
       rounds: mine.length,
       contributed: round2(contributed),
       savings: round2(saved),
@@ -343,7 +361,26 @@ export async function getChamaDashboard(chamaId: string, memberId: string, now =
         paidLastRound: meRow.paidLastRound,
         receivedThisCycle: meRow.receivedThisCycle,
         received: roundRows.filter((r) => r.recipient_id === memberId && r.status === "paid").length,
+        pots: (() => {
+          const mine = roundRows.filter((r) => r.recipient_id === memberId);
+          const sum = (status: RoundStatus) => round2(mine.filter((r) => r.status === status).reduce((s, r) => s + Number(r.pot ?? 0), 0));
+          return {
+            paid: sum("paid"),
+            onTheWay: round2(sum("paying") + sum("collecting")),
+            wins: mine
+              .map((r) => ({
+                round: r.number,
+                cycle: r.cycle,
+                amount: Number(r.pot ?? 0),
+                status: r.status,
+                payoutStatus: r.payout_status,
+                date: r.completed_at ?? r.due_at,
+              }))
+              .reverse(),
+          };
+        })(),
         feePaid: meRow.feePaid,
+        autoPay: meRow.autoPay,
       }
     : null;
 
@@ -382,7 +419,7 @@ export async function getChamaDashboard(chamaId: string, memberId: string, now =
     activeMembers: active.length,
     cycle: {
       number: cycleNumber,
-      roundsDone: cycleRounds.length,
+      roundsDone: cycleRounds.filter(usedTurn).length,
       received: receivedThisCycle.size,
       members: Math.max(active.length, receivedThisCycle.size),
     },
