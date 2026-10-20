@@ -136,8 +136,6 @@ export type ChamaDashboard = {
     savings: number;
     fee: number;
     total: number;
-    /** What you pay if you're the one drawn: savings only. */
-    ifDrawn: number;
   } | null;
   /** The chama's account inside Unitus. */
   account: {
@@ -397,7 +395,6 @@ export async function getChamaDashboard(chamaId: string, memberId: string, now =
         savings: savingsPerRound,
         fee: charge.fee,
         total: charge.total,
-        ifDrawn: savingsPerRound > 0 ? withFee(savingsPerRound).total : 0,
       }
     : null;
   const schedule: ScheduleRow[] = due

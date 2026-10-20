@@ -339,7 +339,7 @@ export function OnboardingFlow() {
               <Row label="Loan repayment" value="Only while you have a loan" />
               <Separator className="my-2" />
               <Row label="Total from PayPal" value={money(chama.charges.monthly.total)} strong />
-              <Row label="In the round you're drawn" value={`${money(chama.charges.savingsOnly.total)} (savings only)`} />
+              <Row label="In the round you're drawn" value="Same, and you receive the whole pot" />
             </div>
 
             {receipt?.paypalSaved || (!receipt && chama.you?.role === "member" && chama.you.joiningFeePaid) ? (

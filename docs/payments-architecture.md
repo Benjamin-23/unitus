@@ -103,7 +103,7 @@ sequenceDiagram
 ```
 
 - **Starting:** the first round runs at `starts_at` once **2 members** have paid the joining fee; until then it waits. The chama keeps accepting members while it runs, up to `member_limit`.
-- **Who pays:** each round, every active member except the recipient pays the contribution; everyone pays savings. A member who received **before the recipient joined** doesn't pay into the recipient's round (the recipient never paid them). Over a cycle every member's contributions paid and received net to zero, including late joiners.
+- **Who pays:** each round, every active member pays the contribution, the recipient included, and everyone pays savings. The recipient receives the whole pot, their own contribution too, in their Unitus wallet (migration 0010); withdrawals from the wallet go out as PayPal payouts. A member who received **before the recipient joined** doesn't pay into the recipient's round (the recipient never paid them). Over a cycle every member's contributions paid and received net to zero, including late joiners.
 - **Cycles:** a cycle ends when every active member has received once; the next round starts a new cycle with everyone.
 - **Pot** = contributions actually collected in that round. A declined member's share is missing (logged); the round still pays out what was collected.
 - **Exactly once:** the round row is unique per chama and number; deductions reuse a request id per round and member; the payout batch id is the round id. A tick that stops halfway is finished by the next tick.

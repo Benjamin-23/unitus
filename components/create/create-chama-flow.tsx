@@ -138,8 +138,8 @@ function Choice<T extends string | number>({
 
 function Preview({ f }: { f: FormState }) {
   const ok = (n: number) => (Number.isFinite(n) ? n : 0);
-  // A full chama: each round, everyone except the recipient pays in.
-  const payout = Math.max(0, ok(f.memberCount) - 1) * ok(f.monthlyContribution);
+  // A full chama: each round everyone pays in, the recipient too, and the recipient gets it all.
+  const payout = ok(f.memberCount) * ok(f.monthlyContribution);
   const perMember = ok(f.monthlyContribution) + ok(f.monthlySavings);
   const savingsCycle = ok(f.memberCount) * ok(f.memberCount) * ok(f.monthlySavings);
   const exampleLoan = (ok(f.joiningFee) + ok(f.monthlySavings) * 6) * ok(f.loanMultiplier);

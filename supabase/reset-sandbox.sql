@@ -5,6 +5,7 @@
 -- Run in the Supabase SQL Editor after the migrations.
 
 truncate table
+  public.withdrawals,
   public.ledger_entries,
   public.ledger_transactions,
   public.ledger_accounts,

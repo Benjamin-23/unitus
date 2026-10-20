@@ -8,9 +8,13 @@ import type { ChamaRow } from "@/lib/chamas";
 import { db, getVaultId, recordPayment, savePayerDetails } from "@/lib/db";
 import { postPayment } from "@/lib/ledger";
 import { chargeRoundDeduction } from "@/lib/paypal/orders";
-import { checkPayout, sendPayout } from "@/lib/paypal/payouts";
-import { PayPalError } from "@/lib/paypal/server";
+import { checkPayout } from "@/lib/paypal/payouts";
+import { settleWithdrawals } from "@/lib/member-wallet";
+import { PayPalError, PayPalUnreachable } from "@/lib/paypal/server";
 import { isFrequency, nextDue, type Frequency } from "@/lib/schedule";
+
+/** How long a round waits for PayPal to be reachable before paying out without a member's share. */
+const UNREACHABLE_GRACE_MS = 30 * 60_000;
 
 export type RoundStatus = "collecting" | "paying" | "paid" | "no_pot" | "payout_failed";
 
@@ -80,16 +84,17 @@ export function nextRoundDue(chama: ChamaRow, rounds: RoundRow[], now = new Date
 }
 
 /**
- * Who pays into a round. Everyone active except the recipient, minus members
- * who received earlier this cycle before the recipient joined: the recipient
- * never paid them, so they don't pay the recipient (until the next cycle).
+ * Who pays into a round. Everyone active, the recipient included (the pot is
+ * every contribution, theirs too), minus members who received earlier this
+ * cycle before the recipient joined: the recipient never paid them, so they
+ * don't pay the recipient (until the next cycle).
  */
 export function contributorsFor(round: Pick<RoundRow, "cycle" | "recipient_id">, members: Membership[], rounds: RoundRow[]) {
   const recipientJoined = new Date(members.find((m) => m.member_id === round.recipient_id)?.joining_fee_paid_at ?? 0);
   const receivedBeforeRecipientJoined = new Set(
     rounds.filter((r) => r.cycle === round.cycle && usedTurn(r) && new Date(r.created_at) < recipientJoined).map((r) => r.recipient_id),
   );
-  return members.filter((m) => m.member_id !== round.recipient_id && !receivedBeforeRecipientJoined.has(m.member_id)).map((m) => m.member_id);
+  return members.filter((m) => m.member_id === round.recipient_id || !receivedBeforeRecipientJoined.has(m.member_id)).map((m) => m.member_id);
 }
 
 function randomPick<T>(items: T[]) {
@@ -113,6 +118,7 @@ async function collectAndPay(chama: ChamaRow, round: RoundRow, log: Log) {
   ) as { member_id: string; status: string }[];
   const done = new Set(existing.filter((p) => p.status === "COMPLETED" || p.status === "PENDING").map((p) => p.member_id));
 
+  let unreachable = 0;
   for (const m of members) {
     if (done.has(m.member_id)) continue;
     const share = { contribution: contributors.has(m.member_id) ? contribution : 0, savings };
@@ -146,10 +152,22 @@ async function collectAndPay(chama: ChamaRow, round: RoundRow, log: Log) {
       }
       log(`${chama.name} ${label}: charged ${m.member_id.slice(0, 6)} $${result.amount} (${result.status})`);
     } catch (error) {
+      if (error instanceof PayPalUnreachable) {
+        unreachable++;
+        log(`${chama.name} ${label}: couldn't reach PayPal to charge ${m.member_id.slice(0, 6)}; will try again`);
+        continue;
+      }
       // A declined member doesn't stop the round; their share is missing from the pot.
       const issue = error instanceof PayPalError ? (error.issue ?? error.message) : (error as Error).message;
       log(`${chama.name} ${label}: charge for ${m.member_id.slice(0, 6)} failed: ${issue}`);
     }
+  }
+
+  // Network trouble isn't a decline: keep the round collecting so the next
+  // scheduler run charges them (same PayPal-Request-Id, so never twice).
+  if (unreachable > 0 && Date.now() - new Date(round.created_at).getTime() < UNREACHABLE_GRACE_MS) {
+    log(`${chama.name} ${label}: waiting to pay out until PayPal is reachable for ${unreachable} member${unreachable === 1 ? "" : "s"}`);
+    return;
   }
 
   const paid = check(
@@ -163,28 +181,22 @@ async function collectAndPay(chama: ChamaRow, round: RoundRow, log: Log) {
     return;
   }
 
-  const recipient = members.find((m) => m.member_id === round.recipient_id)?.members;
-  const receiver = recipient?.paypal_payer_id ? { payerId: recipient.paypal_payer_id } : recipient?.email ? { email: recipient.email } : null;
-  if (!receiver) {
-    await updateRound(round.id, { status: "payout_failed", pot, payout_status: "NO_RECEIVER" });
-    log(`${chama.name} ${label}: recipient has no PayPal to pay; pot of $${pot} stays in the chama`);
-    return;
-  }
-  try {
-    const payout = await sendPayout({ roundId: round.id, amount: pot, receiver, note: `${chama.name} · ${label} merry-go-round payout` });
-    await updateRound(round.id, { status: "paying", pot, payout_batch_id: payout.batchId, payout_status: payout.status });
-    log(`${chama.name} ${label}: payout of $${pot} sent (${payout.status})`);
-  } catch (error) {
-    await updateRound(round.id, { status: "payout_failed", pot, payout_status: (error as Error).message.slice(0, 200) });
-    log(`${chama.name} ${label}: payout failed: ${(error as Error).message}`);
-  }
+  // The pot goes to the recipient's Unitus wallet, where they can withdraw it
+  // to PayPal or spend it with partners. No PayPal call, so it can't fail here.
+  // Credit first: if it fails the round stays collecting and the next run retries
+  // (the credit is idempotent per round), so a round is never "paid" without it.
+  await updateRound(round.id, { pot, completed_at: new Date().toISOString() });
+  const { error } = await db().rpc("ledger_credit_pot", { p_round: round.id });
+  if (error) throw new Error(`Couldn't credit the pot to the wallet: ${error.message}`);
+  await updateRound(round.id, { status: "paid", payout_status: "CREDITED" });
+  log(`${chama.name} ${label}: pot of $${pot} credited to ${round.recipient_id.slice(0, 6)}'s wallet`);
 }
 
 async function updateRound(id: string, patch: Partial<RoundRow>) {
   check(await db().from("chama_rounds").update(patch).eq("id", id));
 }
 
-/** Checks payouts in flight; posts the ones PayPal has sent to the ledger. */
+/** Checks direct pot payouts from before wallets (migration 0010); posts the ones PayPal has sent. */
 async function settlePayouts(log: Log) {
   const paying = check(await db().from("chama_rounds").select("*").eq("status", "paying")) as RoundRow[];
   for (const r of paying) {
@@ -264,6 +276,7 @@ export async function runScheduler({ now = new Date(), forceChamaId }: { now?: D
   };
 
   await settlePayouts(log);
+  await settleWithdrawals(log);
   const chamas = check(await db().from("chamas").select("*").in("status", ["open", "active"])) as ChamaRow[];
   for (const chama of chamas) {
     try {

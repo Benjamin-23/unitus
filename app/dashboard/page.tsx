@@ -12,6 +12,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { LedgerGrid, MembersGrid, RoundsGrid, ScheduleGrid, StatementGrid } from "@/components/dashboard/grids";
 import { ChamaRules } from "@/components/dashboard/chama-rules";
 import { LeaveChama } from "@/components/dashboard/leave-chama";
+import { LiveRefresh } from "@/components/dashboard/live-refresh";
 import { MyChamas } from "@/components/dashboard/my-chamas";
 import { getSession } from "@/lib/auth/session";
 import { PAYPAL_ACCOUNT_URL } from "@/lib/paypal/server";
@@ -109,7 +110,12 @@ async function Dashboard({ searchParams }: { searchParams: PageProps<"/dashboard
   const paidLastRound = members.filter((m) => m.feePaid && m.paidLastRound).length;
   // A member may leave once everyone in the current cycle has received.
   const drawsRemaining = Math.max(0, cycle.members - cycle.received);
-  const fullPot = Number(chama.monthly_contribution) * Math.max(1, d.activeMembers - 1);
+  // Everyone pays in, the recipient too, and the recipient gets it all.
+  const fullPot = Number(chama.monthly_contribution) * d.activeMembers;
+  // Watch for changes that arrive without the member doing anything: PayPal's
+  // webhook saving someone's PayPal, or the scheduler collecting and paying a round.
+  const pending =
+    members.some((m) => m.feePaid && !m.autoPay) || d.rounds.some((r) => r.status === "collecting" || r.status === "paying");
 
   return (
     <>
@@ -159,6 +165,7 @@ async function Dashboard({ searchParams }: { searchParams: PageProps<"/dashboard
         <Badge variant="outline" className="gap-1 font-mono">
           <LandmarkIcon className="size-3" /> {d.account.number}
         </Badge>
+        <LiveRefresh pending={pending} dueAt={next && !next.waiting ? next.date : null} />
       </div>
 
       {you?.feePaid && !you.autoPay && (
@@ -255,8 +262,8 @@ async function Dashboard({ searchParams }: { searchParams: PageProps<"/dashboard
             {next && you?.feePaid && (
               <>
                 <p className="text-xs text-band-foreground/70">
-                  {money(next.contribution)} contribution · {money(next.savings)} savings · {money(next.fee)} PayPal fee. If you&apos;re drawn,
-                  only {money(next.ifDrawn)}.
+                  {money(next.contribution)} contribution · {money(next.savings)} savings · {money(next.fee)} PayPal fee. You pay this even when
+                  you&apos;re drawn, and your contribution comes back to you in the pot.
                 </p>
                 <p className="rounded-xl bg-band-foreground/10 px-3 py-2 text-xs text-band-foreground/90">
                   Make sure {money(next.total)} is available in your PayPal by {when(next.date)}.{" "}
@@ -367,11 +374,13 @@ function PotBanner({ pots, when }: { pots: PotsWon; when: (iso: string) => strin
   const total = pots.paid + pots.onTheWay;
   const message =
     last.status === "collecting"
-      ? `You're the recipient of round ${last.round}! Contributions are being collected now; the pot goes to your PayPal straight after.`
+      ? `You're the recipient of round ${last.round}! Contributions are being collected now; the pot goes to your Unitus wallet straight after.`
       : last.status === "paying"
         ? `You won round ${last.round}: ${money(last.amount)} is on its way to your PayPal. It usually arrives within a few minutes.`
-        : last.status === "paid"
-          ? `You won round ${last.round}: ${money(last.amount)} was paid to your PayPal on ${when(last.date)}.`
+        : last.status === "paid" && last.payoutStatus === "CREDITED"
+          ? `You won round ${last.round}: ${money(last.amount)} was added to your Unitus wallet on ${when(last.date)}. Withdraw it to PayPal whenever you like.`
+          : last.status === "paid"
+            ? `You won round ${last.round}: ${money(last.amount)} was paid to your PayPal on ${when(last.date)}.`
           : last.status === "payout_failed"
             ? `You won round ${last.round}, but PayPal couldn't send the ${money(last.amount)}. It's held safely in the chama's account; Unitus will follow up.`
             : `You were drawn for round ${last.round}, but no contributions were collected that round.`;
@@ -393,9 +402,9 @@ function PotBanner({ pots, when }: { pots: PotsWon; when: (iso: string) => strin
         {last.status !== "no_pot" && (
           <div className="flex shrink-0 flex-col items-start gap-2 sm:items-end">
             <p className="font-heading text-3xl font-semibold text-primary">{money(last.amount)}</p>
-            <a href={PAYPAL_ACCOUNT_URL} target="_blank" rel="noopener noreferrer" className={cn(buttonVariants({ size: "sm", variant: "outline" }))}>
-              Check my PayPal balance ↗
-            </a>
+            <Link href="/dashboard/my-wallet" className={cn(buttonVariants({ size: "sm" }))}>
+              <WalletIcon data-icon="inline-start" /> Open my wallet
+            </Link>
           </div>
         )}
       </CardContent>

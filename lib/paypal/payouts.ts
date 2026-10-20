@@ -1,6 +1,7 @@
-// Server-only: merry-go-round payouts with the PayPal Payouts API. Money goes
-// from the Unitus pool account to the round's recipient; only the scheduler
-// calls this (docs/payments-architecture.md §3).
+// Server-only: payouts with the PayPal Payouts API, from the Unitus pool
+// account to a member's PayPal. Members withdraw from their Unitus wallet this
+// way; rounds before wallets existed paid the pot out directly
+// (docs/payments-architecture.md §3).
 import { paypalRequest } from "@/lib/paypal/server";
 
 type PayoutItem = {
@@ -11,29 +12,32 @@ type PayoutItem = {
 };
 
 /**
- * Sends one payout. The batch id is the round id, so sending twice is refused
- * by PayPal rather than paying twice.
+ * Sends one payout. `id` is unique per payout (e.g. `withdrawal-<uuid>`) and is
+ * both the PayPal-Request-Id and the batch id, so sending twice returns the
+ * first payout or is refused, never paid twice.
  */
 export async function sendPayout({
-  roundId,
+  id,
   amount,
   receiver,
+  subject,
   note,
 }: {
-  roundId: string;
+  id: string;
   amount: number;
   receiver: { payerId: string } | { email: string };
+  subject: string;
   note: string;
 }) {
   const data = await paypalRequest<{ batch_header: { payout_batch_id: string; batch_status: string } }>("/v1/payments/payouts", {
-    requestId: `payout-${roundId}`,
+    requestId: `payout-${id}`,
     body: {
-      sender_batch_header: { sender_batch_id: `round-${roundId}`, email_subject: "Your Unitus merry-go-round payout", email_message: note },
+      sender_batch_header: { sender_batch_id: id, email_subject: subject, email_message: note },
       items: [
         {
           ...("payerId" in receiver ? { recipient_type: "PAYPAL_ID", receiver: receiver.payerId } : { recipient_type: "EMAIL", receiver: receiver.email }),
           amount: { value: amount.toFixed(2), currency: "USD" },
-          sender_item_id: roundId,
+          sender_item_id: id,
           note,
         },
       ],

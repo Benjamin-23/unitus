@@ -53,7 +53,7 @@ export type ChamaPreview = {
     loanInterestRate: number;
   };
   /** What PayPal will charge a member, with the PayPal fee they pay on top. */
-  charges: { joiningFee: Charge; monthly: Charge; savingsOnly: Charge };
+  charges: { joiningFee: Charge; monthly: Charge };
   /**
    * The viewer's relationship to the chama. The creator manages it ("admin")
    * and can also join as a member. Admin rights never include moving money.
@@ -160,7 +160,6 @@ async function toPreview(c: ChamaRow, memberId?: string): Promise<ChamaPreview> 
     charges: {
       joiningFee: withFee(Number(c.joining_fee)),
       monthly: withFee(Number(c.monthly_contribution) + Number(c.monthly_savings)),
-      savingsOnly: withFee(Number(c.monthly_savings)),
     },
     you: you.data
       ? { role: "member", joiningFeePaid: Boolean(you.data.joining_fee_paid_at), isCreator: c.created_by === memberId }
