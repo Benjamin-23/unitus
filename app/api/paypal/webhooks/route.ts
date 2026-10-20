@@ -2,7 +2,7 @@ import { after } from "next/server";
 import { markJoiningFeePaid } from "@/lib/chamas";
 import { db, getPaymentByOrder, recordPayment, saveVault } from "@/lib/db";
 import { postPayment } from "@/lib/ledger";
-import { paypalRequest } from "@/lib/paypal/server";
+import { PayPalError, paypalRequest } from "@/lib/paypal/server";
 
 /**
  * PayPal webhooks. Every event is verified with PayPal before it's used
@@ -39,23 +39,19 @@ export async function POST(request: Request) {
     return new Response(null, { status: 400 });
   }
 
-  const h = (name: string) => request.headers.get(name) ?? "";
-  const { verification_status } = await paypalRequest<{ verification_status: string }>("/v1/notifications/verify-webhook-signature", {
-    requestId: `verify-${h("paypal-transmission-id") || crypto.randomUUID()}`,
-    body: {
-      auth_algo: h("paypal-auth-algo"),
-      cert_url: h("paypal-cert-url"),
-      transmission_id: h("paypal-transmission-id"),
-      transmission_sig: h("paypal-transmission-sig"),
-      transmission_time: h("paypal-transmission-time"),
-      webhook_id: webhookId,
-      webhook_event: event,
-    },
-  });
+  const verification_status = await verify(request, event, webhookId);
   if (verification_status !== "SUCCESS") {
     console.warn(`[webhook] rejected ${event.event_type} ${event.id}: signature ${verification_status}`);
     // 200 so a forged request learns nothing and PayPal doesn't retry it.
     return new Response(null, { status: 200 });
+  }
+
+  // A saved PayPal is matched to a member by the payer id stored when their
+  // capture returns, and the webhook can beat that. Check before replying: a
+  // non-2xx makes PayPal deliver it again later instead of it being lost.
+  if (event.event_type === "VAULT.PAYMENT-TOKEN.CREATED") {
+    const saved = await vaultCreated(event);
+    return new Response(null, { status: saved === "unknown-payer" ? 503 : 200 });
   }
 
   // Reply straight away; do the work after the response.
@@ -65,28 +61,63 @@ export async function POST(request: Request) {
   return new Response(null, { status: 200 });
 }
 
+/**
+ * Asks PayPal whether the event really came from PayPal. A request PayPal
+ * rejects as malformed (4xx) is a failure like a bad signature; network
+ * trouble or a PayPal 5xx throws, so PayPal redelivers the event later.
+ */
+async function verify(request: Request, event: Event, webhookId: string) {
+  const h = (name: string) => request.headers.get(name) ?? "";
+  try {
+    const { verification_status } = await paypalRequest<{ verification_status: string }>("/v1/notifications/verify-webhook-signature", {
+      requestId: `verify-${crypto.randomUUID()}`,
+      body: {
+        auth_algo: h("paypal-auth-algo"),
+        cert_url: h("paypal-cert-url"),
+        transmission_id: h("paypal-transmission-id"),
+        transmission_sig: h("paypal-transmission-sig"),
+        transmission_time: h("paypal-transmission-time"),
+        webhook_id: webhookId,
+        webhook_event: event,
+      },
+    });
+    return verification_status;
+  } catch (error) {
+    if (error instanceof PayPalError && error.status >= 400 && error.status < 500) return "MALFORMED";
+    throw error;
+  }
+}
+
 async function handle(event: Event) {
-  if (event.event_type === "VAULT.PAYMENT-TOKEN.CREATED") return vaultCreated(event);
   if (CAPTURE_STATUS[event.event_type]) return captureChanged(event, CAPTURE_STATUS[event.event_type]);
 }
 
-async function vaultCreated(event: Event) {
+/** PayPal doesn't guarantee event order: a late PENDING mustn't undo a COMPLETED. */
+function canMove(from: string, to: string) {
+  if (from === to) return false;
+  if (from === "REFUNDED") return false;
+  if (from === "COMPLETED" || from === "DENIED") return to === "REFUNDED";
+  return true;
+}
+
+async function vaultCreated(event: Event): Promise<"saved" | "unknown-payer" | "ignored"> {
   const r = event.resource as {
     id?: string;
     customer?: { id?: string };
     payment_source?: { paypal?: { payer_id?: string; email_address?: string } };
   };
   const payerId = r.payment_source?.paypal?.payer_id;
-  if (!r.id || !payerId) return;
+  if (!r.id || !payerId) return "ignored";
   // Members' PayPal payer ids are recorded when they pay the joining fee.
   const { data, error } = await db().from("members").select("id").eq("paypal_payer_id", payerId).maybeSingle<{ id: string }>();
   if (error) throw new Error(error.message);
   if (!data) {
-    console.warn(`[webhook] saved PayPal for an unknown payer; ignored`);
-    return;
+    console.warn(`[webhook] saved PayPal for a payer we don't know yet; asking PayPal to resend`);
+    return "unknown-payer";
   }
   await saveVault(data.id, r.id, r.customer?.id);
   console.info(`[webhook] automatic payments ready for member ${data.id.slice(0, 6)}`);
+  return "saved";
 }
 
 async function captureChanged(event: Event, status: string) {
@@ -100,6 +131,7 @@ async function captureChanged(event: Event, status: string) {
   if (!orderId) return;
   const payment = await getPaymentByOrder(orderId);
   if (!payment) return;
+  if (!canMove(payment.status, status)) return;
   const b = r.seller_receivable_breakdown;
   await recordPayment({
     memberId: payment.member_id,

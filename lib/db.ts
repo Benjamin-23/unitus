@@ -129,9 +129,10 @@ export async function getPaymentByOrder(orderId: string) {
   return check(
     await db()
       .from("payments")
-      .select("member_id, chama_id, kind, reference, amount, principal, fee_charged")
+      .select("member_id, chama_id, kind, reference, amount, principal, fee_charged, status")
       .eq("paypal_order_id", orderId)
       .maybeSingle<{
+        status: string;
         member_id: string;
         chama_id: string | null;
         kind: PaymentKind;

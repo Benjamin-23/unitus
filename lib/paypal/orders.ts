@@ -132,7 +132,9 @@ export async function createOrder(
 }
 
 export async function captureOrder(orderId: string) {
-  const order = await paypalRequest<Order>(`/v2/checkout/orders/${encodeURIComponent(orderId)}/capture`);
+  // One Request-Id per order: a double submit gets the original capture back
+  // from PayPal instead of 422 ORDER_ALREADY_CAPTURED.
+  const order = await paypalRequest<Order>(`/v2/checkout/orders/${encodeURIComponent(orderId)}/capture`, { requestId: `capture-${orderId}` });
   return {
     status: order.status,
     ...captureFigures(order),
