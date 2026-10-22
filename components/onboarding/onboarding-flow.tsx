@@ -23,17 +23,13 @@ import { Separator } from "@/components/ui/separator";
 import { Switch } from "@/components/ui/switch";
 import { PayPalMark } from "@/components/auth/paypal-button";
 import { PayPalPayButton, type CaptureResult } from "@/components/paypal/paypal-pay-button";
-import { money, ordinal } from "@/lib/chama";
+import { money } from "@/lib/chama";
+import { FREQUENCIES, formatDue, perRound } from "@/lib/schedule";
 import type { ChamaPreview } from "@/lib/chamas";
 import { useMe } from "@/lib/auth/use-me";
 import { cn } from "@/lib/utils";
 
 const STEPS = ["PayPal connected", "Join a chama", "Joining fee", "Auto-deductions"] as const;
-
-function monthLabel(ym: string, offset = 0) {
-  const [y, m] = ym.split("-").map(Number);
-  return new Date(y, m - 1 + offset, 1).toLocaleDateString("en-GB", { month: "short", year: "numeric" });
-}
 
 function Stepper({ current }: { current: number }) {
   return (
@@ -119,7 +115,6 @@ export function OnboardingFlow() {
 
   async function join() {
     if (!chama) return;
-    if (chama.you?.role === "admin") return;
     if (chama.you?.role === "member") {
       setStep(chama.you.joiningFeePaid ? 3 : 2);
       return;
@@ -134,7 +129,7 @@ export function OnboardingFlow() {
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error ?? "Couldn't join. Please try again.");
-      setChama({ ...chama, memberCount: chama.memberCount + 1, you: { role: "member", joiningFeePaid: false } });
+      setChama({ ...chama, memberCount: chama.memberCount + 1, you: { role: "member", joiningFeePaid: false, isCreator: chama.you?.role === "admin" } });
       setStep(2);
     } catch (e) {
       setCodeError((e as Error).message);
@@ -143,9 +138,10 @@ export function OnboardingFlow() {
     }
   }
 
-  const cycleEnd = chama ? monthLabel(chama.startMonth, chama.memberLimit - 1) : "";
+  const per = chama ? perRound(chama.frequency) : "round";
   const isAdmin = chama?.you?.role === "admin";
-  const isFull = chama ? !chama.you && (chama.status !== "open" || chama.memberCount >= chama.memberLimit) : false;
+  // Chamas take new members while they run, until they're full or closed.
+  const isFull = chama ? !chama.you && (chama.status === "closed" || chama.memberCount >= chama.memberLimit) : false;
 
 
   return (
@@ -191,7 +187,8 @@ export function OnboardingFlow() {
                   <div>
                     <p className="font-heading text-lg font-semibold">{chama.name}</p>
                     <p className="text-sm text-muted-foreground">
-                      {chama.memberCount} of {chama.memberLimit} members · cycle {monthLabel(chama.startMonth)} – {cycleEnd}
+                      {chama.memberCount} of {chama.memberLimit} members · {FREQUENCIES[chama.frequency].label.toLowerCase()} ·{" "}
+                      {chama.status === "active" ? "running now" : `first round ${formatDue(chama.startsAt, chama.frequency)}`}
                       {chama.createdBy && ` · started by ${chama.createdBy}`}
                     </p>
                   </div>
@@ -202,12 +199,18 @@ export function OnboardingFlow() {
                   <LockIcon className="size-3.5 text-primary" /> The chama&apos;s rules (locked)
                 </p>
                 <Row label="Joining fee (locked in your savings)" value={money(chama.rules.joiningFee)} />
-                <Row label="Merry-go-round contribution" value={`${money(chama.rules.monthlyContribution)} / month`} />
-                <Row label="Monthly payout to the winner" value={money(chama.rules.monthlyContribution * chama.memberLimit)} />
-                <Row label="Savings" value={`${money(chama.rules.monthlySavings)} / month`} />
+                <Row label="Merry-go-round contribution" value={`${money(chama.rules.monthlyContribution)} / ${per}`} />
+                <Row label="Payout when it's your turn" value={`up to ${money(chama.rules.monthlyContribution * (chama.memberLimit - 1))}`} />
+                <Row label="Savings" value={`${money(chama.rules.monthlySavings)} / ${per}`} />
                 <Row label="Savings shared out" value={chama.rules.shareOut === "year-end" ? "At year end" : "Mid-year"} />
                 <Row label="Loans" value={`Up to ${chama.rules.loanMultiplier}× savings at ${chama.rules.loanInterestRate}% flat`} />
-                <Row label="Auto-deduction day" value={`${ordinal(chama.rules.deductionDay)} of each month`} />
+                <Row label="Auto-deduction" value={`${FREQUENCIES[chama.frequency].label}, from your saved PayPal`} />
+                {chama.status === "active" && (
+                  <p className="mt-3 rounded-xl bg-background/60 p-3 text-xs text-muted-foreground">
+                    This chama is already running. You&apos;ll pay into rounds from when you join. Members who received before you joined
+                    don&apos;t pay into your round, and you don&apos;t pay into theirs, until the next cycle.
+                  </p>
+                )}
               </div>
             )}
             {chama?.you?.role === "member" && (
@@ -222,10 +225,10 @@ export function OnboardingFlow() {
             {isAdmin && (
               <Alert>
                 <LockIcon />
-                <AlertTitle>You&apos;re signed in with this chama&apos;s admin account</AlertTitle>
+                <AlertTitle>You started this chama</AlertTitle>
                 <AlertDescription>
-                  The admin account manages the chama but can&apos;t join it, pay into it or receive payouts. To take part as a member,
-                  log out and log in with a different personal PayPal account, then use this invite code.
+                  You can also join it as a member: pay the joining fee, pay into each round and take your turn at the pot, like
+                  everyone else. Being the admin never lets you move the chama&apos;s money.
                 </AlertDescription>
               </Alert>
             )}
@@ -235,7 +238,7 @@ export function OnboardingFlow() {
             <Link href="/groups/new" className="text-sm font-medium text-primary hover:underline">
               Start a new chama instead
             </Link>
-            <Button size="lg" disabled={!chama || isFull || isAdmin || busy} onClick={join}>
+            <Button size="lg" disabled={!chama || isFull || busy} onClick={join}>
               {busy && chama ? <Loader2Icon className="animate-spin" /> : null}
               {chama?.you?.role === "member" ? "Continue" : "Join this chama"} <ArrowRightIcon data-icon="inline-end" />
             </Button>
@@ -296,14 +299,14 @@ export function OnboardingFlow() {
                   <FieldContent>
                     <FieldLabel htmlFor="agree">I understand the joining fee is locked until I leave the chama</FieldLabel>
                     <FieldDescription>
-                      Leaving is only possible once the current cycle ends ({cycleEnd}). Any loan balance is
+                      Leaving is only possible once the current cycle ends (everyone has received once). Any loan balance is
                       deducted from what you withdraw.
                     </FieldDescription>
                   </FieldContent>
                 </Field>
                 <PayPalPayButton purpose={{ purpose: "joining-fee", chamaId: chama.id }} savePayment disabled={!agreed} onCaptured={setReceipt} />
                 <p className="text-xs text-muted-foreground">
-                  Paying also saves your PayPal so your monthly share can be collected automatically.
+                  Paying also saves your PayPal so your share of each round can be collected automatically.
                 </p>
               </>
             )}
@@ -321,14 +324,14 @@ export function OnboardingFlow() {
           <CardHeader>
             <CardTitle className="font-heading text-2xl">Set up automatic deductions</CardTitle>
             <CardDescription className="text-base">
-              On the {ordinal(chama.rules.deductionDay)} of every month, Unitus collects your share from PayPal, so you never miss a
-              draw.
+              Every round ({FREQUENCIES[chama.frequency].label.toLowerCase()}), Unitus collects your share from PayPal, so you never
+              miss a draw. When it&apos;s your turn, the pot is paid straight to your PayPal.
             </CardDescription>
           </CardHeader>
           <CardContent className="flex flex-col gap-5">
             <div className="rounded-2xl border p-5">
               <div className="mb-2 flex items-center gap-2 text-sm font-semibold">
-                <CalendarClockIcon className="size-4 text-primary" /> Each month
+                <CalendarClockIcon className="size-4 text-primary" /> Each round
               </div>
               <Row label="Merry-go-round contribution" value={money(chama.rules.monthlyContribution)} />
               <Row label="Savings" value={money(chama.rules.monthlySavings)} />
@@ -336,6 +339,7 @@ export function OnboardingFlow() {
               <Row label="Loan repayment" value="Only while you have a loan" />
               <Separator className="my-2" />
               <Row label="Total from PayPal" value={money(chama.charges.monthly.total)} strong />
+              <Row label="In the round you're drawn" value="Same, and you receive the whole pot" />
             </div>
 
             {receipt?.paypalSaved || (!receipt && chama.you?.role === "member" && chama.you.joiningFeePaid) ? (
@@ -345,8 +349,8 @@ export function OnboardingFlow() {
             ) : (
               <Alert>
                 <AlertDescription>
-                  PayPal didn&apos;t save your account for automatic payments. You can still continue, and we&apos;ll ask you to approve each
-                  month instead.
+                  PayPal is still finishing saving your account for automatic payments; this usually takes a few minutes. Your dashboard
+                  shows when it&apos;s ready. Until then you won&apos;t be charged or drawn in rounds.
                 </AlertDescription>
               </Alert>
             )}

@@ -11,6 +11,9 @@ export type Member = {
   paypal_verified: boolean;
   created_at: string;
   last_login_at: string;
+  paypal_payer_id?: string | null;
+  /** ISO country code from PayPal's payer details (migration 0007). */
+  country?: string | null;
 };
 
 export type PaymentKind = "joining_fee" | "monthly_deduction" | "offer";
@@ -94,6 +97,12 @@ export async function recordPayment(p: {
   paypalFee?: number;
   netAmount?: number;
   status: string;
+  /** Scheduled deductions: the round, and how much of the principal is contribution (the rest is savings). */
+  roundId?: string;
+  contribution?: number;
+  /** Part of the principal that repays a loan (migration 0011). */
+  loanRepayment?: number;
+  loanId?: string;
 }) {
   check(
     await db().from("payments").upsert(
@@ -110,6 +119,8 @@ export async function recordPayment(p: {
         ...(p.paypalFee !== undefined ? { paypal_fee: p.paypalFee } : {}),
         ...(p.netAmount !== undefined ? { net_amount: p.netAmount } : {}),
         status: p.status,
+        ...(p.roundId ? { round_id: p.roundId, contribution: p.contribution ?? 0 } : {}),
+        ...(p.loanId ? { loan_id: p.loanId, loan_repayment: p.loanRepayment ?? 0 } : {}),
         updated_at: new Date().toISOString(),
       },
       { onConflict: "paypal_order_id" },
@@ -122,9 +133,10 @@ export async function getPaymentByOrder(orderId: string) {
   return check(
     await db()
       .from("payments")
-      .select("member_id, chama_id, kind, reference, amount, principal, fee_charged")
+      .select("member_id, chama_id, kind, reference, amount, principal, fee_charged, status")
       .eq("paypal_order_id", orderId)
       .maybeSingle<{
+        status: string;
         member_id: string;
         chama_id: string | null;
         kind: PaymentKind;
@@ -136,18 +148,15 @@ export async function getPaymentByOrder(orderId: string) {
   );
 }
 
-/** This month's deduction for a member in a chama, if one has already gone through (or is pending). */
-export async function findDeduction(memberId: string, chamaId: string, period: string) {
-  return check(
-    await db()
-      .from("payments")
-      .select("paypal_order_id, status, amount")
-      .eq("member_id", memberId)
-      .eq("chama_id", chamaId)
-      .eq("kind", "monthly_deduction")
-      .eq("reference", period)
-      .in("status", ["COMPLETED", "PENDING"])
-      .limit(1)
-      .maybeSingle<{ paypal_order_id: string; status: string; amount: number }>(),
-  );
+/**
+ * Saves what PayPal tells us about the payer: their country (for analytics)
+ * and payer id (where their merry-go-round payout goes). Never fails the payment.
+ */
+export async function savePayerDetails(memberId: string, { country, payerId }: { country?: string; payerId?: string }) {
+  const update: Record<string, string> = {};
+  if (country && /^[A-Z]{2}$/.test(country)) update.country = country;
+  if (payerId && /^[A-Z0-9]{8,20}$/.test(payerId)) update.paypal_payer_id = payerId;
+  if (Object.keys(update).length === 0) return;
+  const { error } = await db().from("members").update(update).eq("id", memberId);
+  if (error) console.warn(`[members] could not save payer details: ${error.message}`);
 }

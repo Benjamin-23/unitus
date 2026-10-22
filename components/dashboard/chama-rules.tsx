@@ -14,7 +14,8 @@ import {
   DialogTitle,
   DialogTrigger,
 } from "@/components/ui/dialog";
-import { AUTOMATIC_PAYOUTS, deletionChecklist, money, ordinal, type GroupSnapshot } from "@/lib/chama";
+import { AUTOMATIC_PAYOUTS, deletionChecklist, money, type GroupSnapshot } from "@/lib/chama";
+import { FREQUENCIES, formatDue, isFrequency, perRound } from "@/lib/schedule";
 import type { ChamaRow } from "@/lib/chamas";
 import { cn } from "@/lib/utils";
 
@@ -66,24 +67,23 @@ export function ChamaRules({
   canDelete,
 }: {
   chama: ChamaRow;
-  cycle: { start: string; end: string };
+  cycle: { number: number; roundsDone: number; members: number };
   snapshot: GroupSnapshot;
   accountBalance: number;
   /** Only the chama's admin can ask to delete it. */
   canDelete: boolean;
 }) {
   const contribution = Number(chama.monthly_contribution);
-  const month = (m: string) => {
-    const [y, mo] = m.split("-").map(Number);
-    return new Date(Date.UTC(y, mo - 1, 1)).toLocaleDateString("en-GB", { month: "short", year: "numeric", timeZone: "UTC" });
-  };
+  const frequency = isFrequency(chama.frequency) ? chama.frequency : "monthly";
+  const per = perRound(frequency);
   const rules: [string, string][] = [
-    ["Merry-go-round", `${money(contribution)} / month → ${money(contribution * chama.member_limit)} payout`],
-    ["Savings", `${money(Number(chama.monthly_savings))} / month, shared out ${chama.share_out === "year-end" ? "at year end" : "mid-year"}`],
+    ["Rounds", `${FREQUENCIES[frequency].label} · first ${formatDue(chama.starts_at, frequency)}`],
+    ["Merry-go-round", `${money(contribution)} / ${per} from each member → up to ${money(contribution * (chama.member_limit - 1))} payout`],
+    ["Savings", `${money(Number(chama.monthly_savings))} / ${per}, shared out ${chama.share_out === "year-end" ? "at year end" : "mid-year"}`],
     ["Joining fee", `${money(Number(chama.joining_fee))}, locked until a member leaves`],
     ["Loans", `Up to ${chama.loan_multiplier}× savings at ${Number(chama.loan_interest_rate)}% flat`],
-    ["Auto-deduction", `${ordinal(chama.deduction_day)} of each month`],
-    ["Cycle", `${chama.member_limit} members · ${month(cycle.start)} – ${month(cycle.end)}`],
+    ["Auto-deduction", "Every round, from each member's saved PayPal"],
+    ["Members", `Up to ${chama.member_limit} · runs with 2 or more · cycle ${cycle.number}: ${cycle.roundsDone} of ${cycle.members} rounds`],
   ];
 
   return (

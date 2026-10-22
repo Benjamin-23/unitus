@@ -1,13 +1,23 @@
 // Server-only: the double-entry ledger behind chama accounts (migration 0006).
 import { db } from "@/lib/db";
 
-export type AccountKind = "paypal_pool" | "unitus_operating" | "chama_pot" | "member_savings" | "member_joining_fee";
+export type AccountKind =
+  | "paypal_pool"
+  | "unitus_operating"
+  | "chama_pot"
+  | "chama_interest"
+  | "member_savings"
+  | "member_joining_fee"
+  | "member_loan"
+  | "member_wallet";
 
 export type LedgerAccount = {
   id: string;
   number: string;
   name: string;
   kind: AccountKind;
+  /** Debit accounts (a loan owed to the chama) are money the chama doesn't hold. */
+  normal: "debit" | "credit";
   chama_id: string | null;
   member_id: string | null;
   balance: number;
@@ -52,6 +62,10 @@ export async function chamaAccounts(chamaId: string) {
 }
 
 /** A chama's statement: every entry to its accounts, oldest first, with a running total. */
+/** What a chama's accounts hold in total: everything held for members, less what's out on loan. */
+export const heldBalance = (accounts: Pick<LedgerAccount, "normal" | "balance">[]) =>
+  Math.round(accounts.reduce((sum, a) => sum + (a.normal === "debit" ? -a.balance : a.balance), 0) * 100) / 100;
+
 export async function chamaStatement(chamaId: string, viewerId: string): Promise<StatementRow[]> {
   const accounts = await chamaAccounts(chamaId);
   if (accounts.length === 0) return [];

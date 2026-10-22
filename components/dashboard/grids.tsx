@@ -3,17 +3,23 @@
 import type { ColDef, ICellRendererParams, ValueFormatterParams } from "ag-grid-community";
 import { Badge } from "@/components/ui/badge";
 import { money } from "@/lib/chama";
-import type { LedgerRow, MemberRow, ScheduleRow } from "@/lib/dashboard";
+import type { LedgerRow, MemberRow, RoundView, ScheduleRow } from "@/lib/dashboard";
 import type { StatementRow } from "@/lib/ledger";
 import type { WalletChama, WalletTransaction } from "@/lib/wallet";
 import { cn } from "@/lib/utils";
 import { DataGrid } from "./data-grid";
 
 const fmtMoney = (p: ValueFormatterParams) => (p.value ? money(p.value) : "—");
+// Dates show the time too: rounds can be minutes apart.
 const fmtDate = (p: ValueFormatterParams) =>
-  p.value ? new Date(p.value.length === 10 ? `${p.value}T00:00:00Z` : p.value).toLocaleDateString("en-GB", { day: "numeric", month: "short", year: "numeric", timeZone: "UTC" }) : "";
+  !p.value
+    ? ""
+    : p.value.length === 10
+      ? new Date(`${p.value}T00:00:00Z`).toLocaleDateString("en-GB", { day: "numeric", month: "short", year: "numeric", timeZone: "UTC" })
+      : new Date(p.value).toLocaleString("en-GB", { day: "numeric", month: "short", year: "numeric", hour: "2-digit", minute: "2-digit" });
 const fmtPeriod = (p: ValueFormatterParams) => {
   if (!p.value) return "";
+  if (!/^\d{4}-\d{2}$/.test(String(p.value))) return String(p.value);
   const [y, m] = String(p.value).split("-").map(Number);
   return new Date(Date.UTC(y, m - 1, 1)).toLocaleDateString("en-GB", { month: "short", year: "numeric", timeZone: "UTC" });
 };
@@ -21,7 +27,7 @@ const fmtPeriod = (p: ValueFormatterParams) => {
 function StatusBadge({ value }: { value: string }) {
   const label = value === "COMPLETED" ? "Completed" : value.charAt(0) + value.slice(1).toLowerCase();
   const tone =
-    value === "COMPLETED" || value === "Paid"
+    value === "COMPLETED" || value === "Paid" || value === "Received" || value === "Running" || value === "Ready"
       ? "bg-secondary text-primary"
       : ["DENIED", "DECLINED", "FAILED", "Not paid"].includes(value)
         ? "bg-destructive/10 text-destructive"
@@ -43,7 +49,7 @@ function Empty({ children }: { children: React.ReactNode }) {
 }
 
 const ledgerCols: ColDef<LedgerRow>[] = [
-  { field: "date", headerName: "Date", valueFormatter: fmtDate, sort: "desc", maxWidth: 140 },
+  { field: "date", headerName: "Date", valueFormatter: fmtDate, sort: "desc", minWidth: 170, maxWidth: 190 },
   {
     field: "member",
     headerName: "Member",
@@ -51,7 +57,7 @@ const ledgerCols: ColDef<LedgerRow>[] = [
     cellRenderer: (p: ICellRendererParams<LedgerRow>) => <Name value={p.value} isYou={p.data?.isYou} />,
   },
   { field: "type", headerName: "Type", maxWidth: 190 },
-  { field: "period", headerName: "For", valueFormatter: fmtPeriod, maxWidth: 120 },
+  { field: "period", headerName: "For", valueFormatter: fmtPeriod, maxWidth: 130 },
   {
     field: "amount",
     headerName: "To the chama",
@@ -66,12 +72,12 @@ const ledgerCols: ColDef<LedgerRow>[] = [
 ];
 
 export function LedgerGrid({ rows }: { rows: LedgerRow[] }) {
-  if (rows.length === 0) return <Empty>No payments yet. Joining fees and monthly contributions will appear here.</Empty>;
+  if (rows.length === 0) return <Empty>No payments yet. Joining fees and round contributions appear here.</Empty>;
   return <DataGrid<LedgerRow> rowData={rows} columnDefs={ledgerCols} pagination paginationPageSize={10} paginationPageSizeSelector={[10, 25, 50]} height={560} />;
 }
 
 const scheduleCols: ColDef<ScheduleRow>[] = [
-  { field: "date", headerName: "Deduction date", valueFormatter: fmtDate, maxWidth: 170 },
+  { field: "date", headerName: "Deduction", valueFormatter: fmtDate, minWidth: 170, maxWidth: 190 },
   { field: "contribution", headerName: "Merry-go-round", valueFormatter: fmtMoney, type: "rightAligned" },
   { field: "savings", headerName: "Savings", valueFormatter: fmtMoney, type: "rightAligned" },
   { field: "fee", headerName: "PayPal fee", valueFormatter: fmtMoney, type: "rightAligned" },
@@ -85,7 +91,7 @@ const scheduleCols: ColDef<ScheduleRow>[] = [
 ];
 
 export function ScheduleGrid({ rows }: { rows: ScheduleRow[] }) {
-  if (rows.length === 0) return <Empty>No upcoming deductions: this chama&apos;s cycle has finished.</Empty>;
+  if (rows.length === 0) return <Empty>No upcoming rounds: this chama is closed.</Empty>;
   return <DataGrid<ScheduleRow> rowData={rows} columnDefs={scheduleCols} />;
 }
 
@@ -96,7 +102,7 @@ const memberCols: ColDef<MemberRow>[] = [
     minWidth: 190,
     cellRenderer: (p: ICellRendererParams<MemberRow>) => <Name value={p.value} isYou={p.data?.isYou} />,
   },
-  { field: "joined", headerName: "Joined", valueFormatter: fmtDate, maxWidth: 140 },
+  { field: "joined", headerName: "Joined", valueFormatter: fmtDate, minWidth: 160, maxWidth: 180 },
   {
     field: "feePaid",
     headerName: "Joining fee",
@@ -104,12 +110,31 @@ const memberCols: ColDef<MemberRow>[] = [
     cellRenderer: (p: ICellRendererParams) => <StatusBadge value={p.value ? "Paid" : "Not paid"} />,
   },
   {
-    field: "paidThisMonth",
-    headerName: "This month",
+    field: "paidLastRound",
+    headerName: "Last round",
     maxWidth: 140,
-    cellRenderer: (p: ICellRendererParams) => <StatusBadge value={p.value ? "Paid" : "PENDING"} />,
+    cellRenderer: (p: ICellRendererParams) => <StatusBadge value={p.value ? "Paid" : "Not paid"} />,
   },
-  { field: "months", headerName: "Months paid", type: "rightAligned", maxWidth: 140 },
+  {
+    field: "autoPay",
+    headerName: "Auto-pay",
+    maxWidth: 140,
+    cellRenderer: (p: ICellRendererParams<MemberRow>) => <StatusBadge value={!p.data?.feePaid ? "Not paid" : p.value ? "Ready" : "PENDING"} />,
+  },
+  {
+    field: "receivedThisCycle",
+    headerName: "This cycle",
+    maxWidth: 150,
+    cellRenderer: (p: ICellRendererParams) => <StatusBadge value={p.value ? "Received" : "Waiting"} />,
+  },
+  { field: "rounds", headerName: "Rounds paid", type: "rightAligned", maxWidth: 140 },
+  {
+    field: "potReceived",
+    headerName: "Pot received",
+    type: "rightAligned",
+    maxWidth: 150,
+    cellRenderer: (p: ICellRendererParams) => (p.value ? <span className="font-semibold text-primary tabular-nums">{money(p.value)}</span> : "—"),
+  },
   { field: "contributed", headerName: "Contributed", valueFormatter: fmtMoney, type: "rightAligned", maxWidth: 150 },
   { field: "savings", headerName: "Savings", valueFormatter: fmtMoney, type: "rightAligned", maxWidth: 140 },
   {
@@ -128,7 +153,7 @@ export function MembersGrid({ rows }: { rows: MemberRow[] }) {
 }
 
 const statementCols: ColDef<StatementRow>[] = [
-  { field: "date", headerName: "Date", valueFormatter: fmtDate, maxWidth: 140 },
+  { field: "date", headerName: "Date", valueFormatter: fmtDate, minWidth: 170, maxWidth: 190 },
   { field: "description", headerName: "Description", minWidth: 200 },
   {
     field: "member",
@@ -181,10 +206,10 @@ const walletChamaCols: ColDef<WalletChama>[] = [
     field: "status",
     headerName: "Status",
     maxWidth: 130,
-    cellRenderer: (p: ICellRendererParams) => <StatusBadge value={p.value === "open" ? "Open" : p.value === "active" ? "Paid" : "Closed"} />,
+    cellRenderer: (p: ICellRendererParams) => <StatusBadge value={p.value === "open" ? "Not started" : p.value === "active" ? "Running" : "Closed"} />,
   },
   { headerName: "Members", maxWidth: 130, valueGetter: (p) => (p.data ? `${p.data.members} / ${p.data.memberLimit}` : "") },
-  { field: "createdAt", headerName: "Created", valueFormatter: fmtDate, maxWidth: 140 },
+  { field: "createdAt", headerName: "Created", valueFormatter: fmtDate, minWidth: 160, maxWidth: 180 },
   {
     field: "balance",
     headerName: "Balance held",
@@ -201,7 +226,7 @@ export function WalletChamasGrid({ rows }: { rows: WalletChama[] }) {
 }
 
 const walletTxCols: ColDef<WalletTransaction>[] = [
-  { field: "date", headerName: "Date", valueFormatter: fmtDate, sort: "desc", maxWidth: 130 },
+  { field: "date", headerName: "Date", valueFormatter: fmtDate, sort: "desc", minWidth: 170, maxWidth: 190 },
   { field: "chama", headerName: "Chama", minWidth: 150 },
   { field: "accountNumber", headerName: "Account no.", minWidth: 150, cellClass: "font-mono text-xs" },
   { field: "type", headerName: "Type", minWidth: 170 },
@@ -216,4 +241,39 @@ const walletTxCols: ColDef<WalletTransaction>[] = [
 export function WalletTransactionsGrid({ rows }: { rows: WalletTransaction[] }) {
   if (rows.length === 0) return <Empty>No transactions yet. Every payment into any chama appears here.</Empty>;
   return <DataGrid<WalletTransaction> rowData={rows} columnDefs={walletTxCols} pagination paginationPageSize={15} paginationPageSizeSelector={[15, 50, 100]} height={620} />;
+}
+
+const ROUND_STATUS: Record<RoundView["status"], string> = {
+  collecting: "Collecting",
+  paying: "Paying out",
+  paid: "Paid",
+  no_pot: "Nothing collected",
+  payout_failed: "FAILED",
+};
+
+const roundCols: ColDef<RoundView>[] = [
+  { field: "number", headerName: "Round", maxWidth: 100, valueFormatter: (p) => `#${p.value}` },
+  { field: "cycle", headerName: "Cycle", maxWidth: 100 },
+  { field: "dueAt", headerName: "Ran", valueFormatter: fmtDate, minWidth: 170 },
+  {
+    field: "recipient",
+    headerName: "Recipient",
+    minWidth: 170,
+    cellRenderer: (p: ICellRendererParams<RoundView>) => <Name value={p.value} isYou={p.data?.isYou} />,
+  },
+  {
+    field: "pot",
+    headerName: "Pot paid out",
+    type: "rightAligned",
+    maxWidth: 150,
+    cellRenderer: (p: ICellRendererParams) => (p.value ? <span className="font-semibold tabular-nums">{money(p.value)}</span> : "—"),
+  },
+  { field: "status", headerName: "Status", maxWidth: 170, cellRenderer: (p: ICellRendererParams) => <StatusBadge value={ROUND_STATUS[p.value as RoundView["status"]] ?? p.value} /> },
+  { field: "payoutStatus", headerName: "PayPal payout", minWidth: 150, valueFormatter: (p) => p.value ?? "—", cellClass: "text-xs" },
+  { field: "payoutFee", headerName: "Payout fee", valueFormatter: fmtMoney, type: "rightAligned", maxWidth: 130 },
+];
+
+export function RoundsGrid({ rows }: { rows: RoundView[] }) {
+  if (rows.length === 0) return <Empty>No rounds yet. The first runs at the start time once 2 members have paid the joining fee.</Empty>;
+  return <DataGrid<RoundView> rowData={rows} columnDefs={roundCols} pagination paginationPageSize={10} paginationPageSizeSelector={[10, 25, 50]} height={520} />;
 }

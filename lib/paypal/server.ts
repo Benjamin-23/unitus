@@ -23,6 +23,9 @@ export class PayPalError extends Error {
   }
 }
 
+/** PayPal couldn't be reached at all, so the request's outcome is unknown. Safe to retry. */
+export class PayPalUnreachable extends Error {}
+
 function credentials() {
   const { PAYPAL_CLIENT_ID, PAYPAL_CLIENT_SECRET } = process.env;
   if (!PAYPAL_CLIENT_ID || !PAYPAL_CLIENT_SECRET) {
@@ -80,17 +83,29 @@ export async function paypalRequest<T>(
   { method = "POST", body, requestId = crypto.randomUUID() }: { method?: string; body?: unknown; requestId?: string } = {},
 ): Promise<T> {
   for (let attempt = 0; ; attempt++) {
-    const res = await fetch(`${PAYPAL_API_BASE}${path}`, {
-      method,
-      headers: {
-        Authorization: `Bearer ${await getAccessToken()}`,
-        "Content-Type": "application/json",
-        Prefer: "return=representation",
-        ...(method === "POST" ? { "PayPal-Request-Id": requestId } : {}),
-      },
-      body: body === undefined ? undefined : JSON.stringify(body),
-      cache: "no-store",
-    });
+    let res: Response;
+    try {
+      res = await fetch(`${PAYPAL_API_BASE}${path}`, {
+        method,
+        headers: {
+          Authorization: `Bearer ${await getAccessToken()}`,
+          "Content-Type": "application/json",
+          Prefer: "return=representation",
+          ...(method === "POST" ? { "PayPal-Request-Id": requestId } : {}),
+        },
+        body: body === undefined ? undefined : JSON.stringify(body),
+        cache: "no-store",
+      });
+    } catch (error) {
+      // Couldn't reach PayPal (DNS, connection reset, timeout). PayPal may
+      // still have received it, so retry with the same PayPal-Request-Id.
+      if (attempt < 3) {
+        await sleep(2 ** attempt * 1000);
+        continue;
+      }
+      console.error(`[paypal] ${method} ${path} couldn't reach PayPal: ${(error as Error).message}`);
+      throw new PayPalUnreachable(`Couldn't reach PayPal: ${(error as Error).message}`);
+    }
 
     if (res.ok) return (await res.json()) as T;
 

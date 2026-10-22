@@ -22,16 +22,18 @@ export function LeaveChama({
   joiningFee,
   drawsRemaining,
   cycleEnd,
+  loanBalance = 0,
 }: {
   chamaName: string;
   savings: number;
   joiningFee: number;
   drawsRemaining: number;
   cycleEnd: string;
+  /** Any loan still owed is settled from what they get back. */
+  loanBalance?: number;
 }) {
   const allowed = drawsRemaining === 0;
-  // TODO(loans): deduct any outstanding loan balance once loans are stored.
-  const payout = savings + joiningFee;
+  const payout = Math.max(0, savings + joiningFee - loanBalance);
 
   return (
     <Dialog>
@@ -60,12 +62,18 @@ export function LeaveChama({
             </span>
             <span>{money(joiningFee)}</span>
           </div>
+          {loanBalance > 0 && (
+            <div className="flex justify-between py-1">
+              <span className="text-muted-foreground">Loan still owed</span>
+              <span>−{money(loanBalance)}</span>
+            </div>
+          )}
           <Separator className="my-2" />
           <div className="flex justify-between py-1 font-semibold">
             <span>Paid to your PayPal</span>
             <span className="font-heading text-lg">{money(payout)}</span>
           </div>
-          <p className="mt-2 text-xs text-muted-foreground">Figures are as of today and grow with each monthly contribution.</p>
+          <p className="mt-2 text-xs text-muted-foreground">Figures are as of today and grow with each round.</p>
         </div>
         <DialogFooter>
           <DialogClose render={<Button variant="outline" />}>Stay in the chama</DialogClose>

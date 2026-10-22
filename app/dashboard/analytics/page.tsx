@@ -5,7 +5,7 @@ import { redirect } from "next/navigation";
 import { buttonVariants } from "@/components/ui/button";
 import { ChamaStudioLoader } from "@/components/analytics/chama-studio-loader";
 import { getSession } from "@/lib/auth/session";
-import { getChamaDashboard, listDashboardChamas, monthName } from "@/lib/dashboard";
+import { getChamaDashboard, listDashboardChamas } from "@/lib/dashboard";
 import { cn } from "@/lib/utils";
 
 export const metadata: Metadata = { title: "Analytics · Unitus" };
@@ -53,11 +53,14 @@ async function Analytics({ searchParams }: { searchParams: PageProps<"/dashboard
       </div>
       <ChamaStudioLoader
         data={{
-          monthly: d.monthly.map((m) => ({ ...m, month: monthName(m.month) })),
+          monthly: d.monthly,
           members: d.members.map((m) => ({
             name: m.name,
+            country: m.country,
+            // "Name · Country" keeps per-member charts readable when names repeat across countries.
+            memberCountry: `${m.name} · ${m.country}`,
             feePaid: m.feePaid ? "Paid" : "Not paid",
-            months: m.months,
+            months: m.rounds,
             contributed: m.contributed,
             savings: m.savings,
           })),
@@ -70,7 +73,7 @@ async function Analytics({ searchParams }: { searchParams: PageProps<"/dashboard
 export default function AnalyticsPage({ searchParams }: PageProps<"/dashboard/analytics">) {
   return (
     <main className="mx-auto flex w-full max-w-7xl flex-1 flex-col gap-6 px-4 py-8 sm:px-6">
-      <Suspense fallback={<div className="h-[960px] animate-pulse rounded-3xl border bg-card" />}>
+      <Suspense fallback={<div className="h-[1320px] animate-pulse rounded-3xl border bg-card" />}>
         <Analytics searchParams={searchParams} />
       </Suspense>
     </main>

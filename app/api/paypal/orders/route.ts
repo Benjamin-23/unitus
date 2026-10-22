@@ -29,12 +29,6 @@ export async function POST(request: NextRequest) {
     if (purpose.purpose === "joining-fee") {
       // Only members who haven't paid yet can pay a chama's joining fee.
       const [row, membership] = await Promise.all([getChamaRow(purpose.chamaId), getMembership(purpose.chamaId, session.memberId)]);
-      if (row && row.created_by === session.memberId) {
-        return Response.json(
-          { error: "This is the chama's admin account, which can't pay into it. Log in with a different PayPal account to join and pay." },
-          { status: 403 },
-        );
-      }
       if (!row || !membership) return Response.json({ error: "Join the chama before paying its joining fee." }, { status: 403 });
       if (membership.joining_fee_paid_at) return Response.json({ error: "You've already paid this joining fee." }, { status: 409 });
       chama = { id: row.id, name: row.name, joiningFee: Number(row.joining_fee) };

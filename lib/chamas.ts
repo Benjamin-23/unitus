@@ -2,6 +2,10 @@
 import { validateRules, type GroupRules } from "@/lib/chama";
 import { db } from "@/lib/db";
 import { withFee, type Charge } from "@/lib/fees";
+import type { Frequency } from "@/lib/schedule";
+
+/** 30-minute rounds exist to test auto-payments; only the sandbox allows them. */
+export const allowTestFrequency = () => process.env.PAYPAL_ENVIRONMENT !== "production";
 
 export type ChamaRow = {
   id: string;
@@ -19,7 +23,10 @@ export type ChamaRow = {
   share_out: "mid-year" | "year-end";
   loan_multiplier: number;
   loan_interest_rate: number;
+  /** open: first round not run yet · active: running · closed: wound up */
   status: "open" | "active" | "closed";
+  frequency: Frequency;
+  starts_at: string;
   created_at: string;
 };
 
@@ -33,6 +40,8 @@ export type ChamaPreview = {
   memberCount: number;
   memberLimit: number;
   startMonth: string;
+  startsAt: string;
+  frequency: Frequency;
   status: ChamaRow["status"];
   rules: {
     monthlyContribution: number;
@@ -46,10 +55,10 @@ export type ChamaPreview = {
   /** What PayPal will charge a member, with the PayPal fee they pay on top. */
   charges: { joiningFee: Charge; monthly: Charge };
   /**
-   * The viewer's relationship to the chama. The creator is "admin" only: never a
-   * member, never pays, never receives payouts (see migration 0003).
+   * The viewer's relationship to the chama. The creator manages it ("admin")
+   * and can also join as a member. Admin rights never include moving money.
    */
-  you?: { role: "admin" } | { role: "member"; joiningFeePaid: boolean };
+  you?: { role: "admin" } | { role: "member"; joiningFeePaid: boolean; isCreator: boolean };
 };
 
 export class ChamaError extends Error {
@@ -75,25 +84,25 @@ export function normaliseInviteCode(code: string) {
   return clean.length === 8 ? `${clean.slice(0, 4)}-${clean.slice(4)}` : null;
 }
 
-export type CreateChamaInput = Omit<GroupRules, "currency"> & { startMonth: string; description?: string };
+export type CreateChamaInput = Omit<GroupRules, "currency"> & { startsAt: string; description?: string };
 
 export async function createChama(memberId: string, input: CreateChamaInput) {
-  const errors = validateRules({ ...input, currency: "USD" });
+  const errors = validateRules({ ...input, currency: "USD" }, { allowTestFrequency: allowTestFrequency() });
   const firstError = Object.values(errors)[0];
   if (firstError) throw new ChamaError(firstError, 400);
-  if (!/^\d{4}-\d{2}$/.test(input.startMonth)) throw new ChamaError("Choose the month of the first draw.", 400);
-  const thisMonth = new Date().toISOString().slice(0, 7);
-  if (input.startMonth < thisMonth) throw new ChamaError("The first draw can't be in the past.", 400);
+  const startsAt = new Date(input.startsAt);
+  // A few minutes' grace for slow form submits.
+  if (startsAt.getTime() < Date.now() - 5 * 60_000) throw new ChamaError("The first round can't be in the past.", 400);
 
   const rules = {
     name: input.name.trim(),
     description: input.description?.trim() ?? "",
     memberLimit: input.memberCount,
-    startMonth: `${input.startMonth}-01`,
+    startsAt: startsAt.toISOString(),
+    frequency: input.frequency,
     monthlyContribution: input.monthlyContribution,
     monthlySavings: input.monthlySavings,
     joiningFee: input.joiningFee,
-    deductionDay: input.deductionDay,
     shareOut: input.shareOut,
     loanMultiplier: input.loanMultiplier,
     loanInterestRate: input.loanInterestRate,
@@ -103,7 +112,6 @@ export async function createChama(memberId: string, input: CreateChamaInput) {
   for (let attempt = 0; attempt < 5; attempt++) {
     const { data, error } = await db().rpc("create_chama", { p_member: memberId, p_invite_code: newInviteCode(), p_rules: rules });
     if (!error) return data as ChamaRow;
-    if (/takes part in a chama/i.test(error.message)) throw new ChamaError(error.message + ".", 409);
     if (!error.message.includes("invite_code")) throw new Error(`Database error: ${error.message}`);
   }
   throw new Error("Could not generate a unique invite code");
@@ -137,6 +145,8 @@ async function toPreview(c: ChamaRow, memberId?: string): Promise<ChamaPreview> 
     memberCount: count,
     memberLimit: c.member_limit,
     startMonth: c.start_month.slice(0, 7),
+    startsAt: c.starts_at,
+    frequency: c.frequency,
     status: c.status,
     rules: {
       monthlyContribution: Number(c.monthly_contribution),
@@ -151,12 +161,11 @@ async function toPreview(c: ChamaRow, memberId?: string): Promise<ChamaPreview> 
       joiningFee: withFee(Number(c.joining_fee)),
       monthly: withFee(Number(c.monthly_contribution) + Number(c.monthly_savings)),
     },
-    you:
-      memberId && c.created_by === memberId
+    you: you.data
+      ? { role: "member", joiningFeePaid: Boolean(you.data.joining_fee_paid_at), isCreator: c.created_by === memberId }
+      : memberId && c.created_by === memberId
         ? { role: "admin" }
-        : you.data
-          ? { role: "member", joiningFeePaid: Boolean(you.data.joining_fee_paid_at) }
-          : undefined,
+        : undefined,
   };
 }
 
@@ -180,7 +189,7 @@ export async function joinChama(memberId: string, code: string) {
   if (!normalised) throw new ChamaError("Invite codes look like K7QM-3XPA.", 400);
   const { data, error } = await db().rpc("join_chama", { p_member: memberId, p_invite_code: normalised });
   if (error) {
-    if (/no chama|full|no longer accepting|admin account/i.test(error.message)) throw new ChamaError(error.message + ".", 409);
+    if (/no chama|full|no longer accepting/i.test(error.message)) throw new ChamaError(error.message + ".", 409);
     throw new Error(`Database error: ${error.message}`);
   }
   const row = (data as { chama_id: string; already_member: boolean }[])[0];
@@ -203,7 +212,9 @@ export async function markJoiningFeePaid(chamaId: string, memberId: string) {
     .from("chama_members")
     .update({ joining_fee_paid_at: new Date().toISOString() })
     .eq("chama_id", chamaId)
-    .eq("member_id", memberId);
+    .eq("member_id", memberId)
+    // Keep the first time: it decides which rounds a member takes part in.
+    .is("joining_fee_paid_at", null);
   if (error) throw new Error(`Database error: ${error.message}`);
 }
 
@@ -223,33 +234,4 @@ export function chamaErrorResponse(error: unknown) {
   if (error instanceof ChamaError) return Response.json({ error: error.message }, { status: error.status });
   console.error("[chamas]", error);
   return Response.json({ error: "Something went wrong. Please try again." }, { status: 500 });
-}
-
-/** Chamas where the member has paid the joining fee, so monthly deductions apply. */
-export async function listChargeableChamas(memberId: string) {
-  const { data, error } = await db()
-    .from("chama_members")
-    .select("chamas(id, name, monthly_contribution, monthly_savings, status)")
-    .eq("member_id", memberId)
-    .not("joining_fee_paid_at", "is", null);
-  if (error) throw new Error(`Database error: ${error.message}`);
-  const rows = (data ?? []) as unknown as { chamas: Pick<ChamaRow, "id" | "name" | "monthly_contribution" | "monthly_savings" | "status"> }[];
-  return rows
-    .filter((r) => r.chamas.status !== "closed")
-    .map((r) => ({
-      id: r.chamas.id,
-      name: r.chamas.name,
-      monthlyContribution: Number(r.chamas.monthly_contribution),
-      monthlySavings: Number(r.chamas.monthly_savings),
-    }));
-}
-
-/**
- * Admin and member accounts are separate: an account that is a member of any
- * chama, or has paid into one, can't create a chama (enforced in the database too).
- */
-export async function canCreateChama(memberId: string) {
-  const { data, error } = await db().rpc("can_create_chama", { p_member: memberId });
-  if (error) throw new Error(`Database error: ${error.message}`);
-  return data === true;
 }

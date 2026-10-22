@@ -1,3 +1,5 @@
+import { isFrequency, type Frequency } from "@/lib/schedule";
+
 // Domain rules for a Unitus chama. Pure functions so the same logic can run
 // in the UI today and on the server once the backend exists.
 
@@ -10,14 +12,16 @@ export type Group = {
   currency: "USD";
   /** Paid once on joining. Verifies the member's PayPal and is locked in their savings until they leave. */
   joiningFee: number;
+  /** How often a round runs. Contribution and savings are per round. */
+  frequency: Frequency;
   monthlyContribution: number;
   monthlySavings: number;
   loanMultiplier: number;
   /** Flat interest on a loan, as a percentage. */
   loanInterestRate: number;
   shareOut: ShareOut;
-  /** Day of the month auto-deductions run. */
-  deductionDay: number;
+  /** Day of the month auto-deductions ran (older monthly chamas only). */
+  deductionDay?: number;
   memberCount: number;
   cycle: { startMonth: string; endMonth: string; drawsCompleted: number };
 };
@@ -111,7 +115,7 @@ export type GroupRules = Omit<Group, "id" | "inviteCode" | "cycle">;
 
 /** The only ways money ever leaves the chama account. */
 export const AUTOMATIC_PAYOUTS = [
-  "Monthly merry-go-round payout to the drawn member",
+  "Merry-go-round payout to each round's drawn member",
   "Savings share-out on the agreed date",
   "Approved member loans",
   "A leaving member's savings and joining fee, after the cycle ends",
@@ -158,15 +162,15 @@ export function deletionChecklist(s: GroupSnapshot) {
 }
 
 /** Validation for the create-chama form. Returns a message per invalid field. */
-export function validateRules(r: Partial<GroupRules> & { startMonth?: string }) {
-  const errors: Partial<Record<keyof GroupRules | "startMonth", string>> = {};
+export function validateRules(r: Partial<GroupRules> & { startsAt?: string }, { allowTestFrequency = false } = {}) {
+  const errors: Partial<Record<keyof GroupRules | "startsAt", string>> = {};
   if (!r.name || r.name.trim().length < 3) errors.name = "Give your chama a name (at least 3 characters).";
   if (!r.memberCount || r.memberCount < 2 || r.memberCount > 30) errors.memberCount = "A chama needs between 2 and 30 members.";
-  if (!r.startMonth) errors.startMonth = "Choose the month the first draw happens.";
-  if (!r.monthlyContribution || r.monthlyContribution < 1) errors.monthlyContribution = "Enter the monthly merry-go-round contribution.";
+  if (!isFrequency(r.frequency) || (r.frequency === "30min" && !allowTestFrequency)) errors.frequency = "Choose how often the chama runs.";
+  if (!r.startsAt || Number.isNaN(Date.parse(r.startsAt))) errors.startsAt = "Choose when the first round runs.";
+  if (!r.monthlyContribution || r.monthlyContribution < 1) errors.monthlyContribution = "Enter the merry-go-round contribution per round.";
   if (r.monthlySavings == null || r.monthlySavings < 0) errors.monthlySavings = "Savings can be zero, but not negative.";
   if (!r.joiningFee || r.joiningFee < 1) errors.joiningFee = "The joining fee verifies each member's PayPal, so it must be at least $1.";
-  if (!r.deductionDay || r.deductionDay < 1 || r.deductionDay > 28) errors.deductionDay = "Pick a day between 1 and 28 so it exists in every month.";
   if (!r.loanMultiplier || r.loanMultiplier < 1 || r.loanMultiplier > 5) errors.loanMultiplier = "Choose a multiplier between 1× and 5×.";
   if (r.loanInterestRate == null || r.loanInterestRate < 0 || r.loanInterestRate > 30) errors.loanInterestRate = "Interest must be between 0% and 30%.";
   return errors;
