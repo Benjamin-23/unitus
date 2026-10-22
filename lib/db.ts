@@ -100,6 +100,9 @@ export async function recordPayment(p: {
   /** Scheduled deductions: the round, and how much of the principal is contribution (the rest is savings). */
   roundId?: string;
   contribution?: number;
+  /** Part of the principal that repays a loan (migration 0011). */
+  loanRepayment?: number;
+  loanId?: string;
 }) {
   check(
     await db().from("payments").upsert(
@@ -117,6 +120,7 @@ export async function recordPayment(p: {
         ...(p.netAmount !== undefined ? { net_amount: p.netAmount } : {}),
         status: p.status,
         ...(p.roundId ? { round_id: p.roundId, contribution: p.contribution ?? 0 } : {}),
+        ...(p.loanId ? { loan_id: p.loanId, loan_repayment: p.loanRepayment ?? 0 } : {}),
         updated_at: new Date().toISOString(),
       },
       { onConflict: "paypal_order_id" },

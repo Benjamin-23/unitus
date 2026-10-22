@@ -9,6 +9,7 @@ import { db, getVaultId, recordPayment, savePayerDetails } from "@/lib/db";
 import { postPayment } from "@/lib/ledger";
 import { chargeRoundDeduction } from "@/lib/paypal/orders";
 import { checkPayout } from "@/lib/paypal/payouts";
+import { loanInstalmentFor } from "@/lib/loans";
 import { settleWithdrawals } from "@/lib/member-wallet";
 import { PayPalError, PayPalUnreachable } from "@/lib/paypal/server";
 import { isFrequency, nextDue, type Frequency } from "@/lib/schedule";
@@ -121,8 +122,9 @@ async function collectAndPay(chama: ChamaRow, round: RoundRow, log: Log) {
   let unreachable = 0;
   for (const m of members) {
     if (done.has(m.member_id)) continue;
-    const share = { contribution: contributors.has(m.member_id) ? contribution : 0, savings };
-    if (share.contribution + share.savings <= 0) continue;
+    const loan = await loanInstalmentFor(chama.id, m.member_id, round.created_at);
+    const share = { contribution: contributors.has(m.member_id) ? contribution : 0, savings, loanRepayment: loan?.amount ?? 0 };
+    if (share.contribution + share.savings + share.loanRepayment <= 0) continue;
     const vaultId = await getVaultId(m.member_id);
     if (!vaultId) {
       log(`${chama.name} ${label}: member ${m.member_id.slice(0, 6)} has no saved PayPal, skipped`);
@@ -137,6 +139,8 @@ async function collectAndPay(chama: ChamaRow, round: RoundRow, log: Log) {
         reference: label,
         roundId: round.id,
         contribution: share.contribution,
+        loanRepayment: share.loanRepayment,
+        loanId: loan?.loanId,
         orderId: result.orderId,
         captureId: result.captureId,
         amount: Number(result.amount),

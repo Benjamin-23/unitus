@@ -2,7 +2,8 @@
 import type { ChamaRow } from "@/lib/chamas";
 import { db } from "@/lib/db";
 import { withFee } from "@/lib/fees";
-import { chamaAccountNumber, chamaAccounts, chamaStatement, type LedgerAccount, type StatementRow } from "@/lib/ledger";
+import { chamaAccountNumber, chamaAccounts, chamaStatement, heldBalance, type LedgerAccount, type StatementRow } from "@/lib/ledger";
+import { getLoanOffer, type LoanOffer } from "@/lib/loans";
 import { listRounds, membersWithSavedPayPal, MIN_MEMBERS_TO_RUN, nextRoundDue, usedTurn, type RoundStatus } from "@/lib/rounds";
 import { addRounds, isFrequency, type Frequency } from "@/lib/schedule";
 
@@ -15,6 +16,7 @@ type PaymentRow = {
   amount: number;
   principal: number;
   contribution: number | null;
+  loan_repayment: number | null;
   fee_charged: number;
   paypal_fee: number | null;
   net_amount: number | null;
@@ -54,6 +56,8 @@ export type MemberRow = {
   autoPay: boolean;
   /** Rounds they've paid into. */
   rounds: number;
+  /** Rounds they've saved in (counts towards borrowing). */
+  savingRounds: number;
   contributed: number;
   savings: number;
   /** Joining fee + savings: what's theirs in the pool. */
@@ -134,16 +138,20 @@ export type ChamaDashboard = {
     waiting: boolean;
     contribution: number;
     savings: number;
+    /** Loan instalment added to the viewer's payment. */
+    loanRepayment: number;
     fee: number;
     total: number;
   } | null;
+  /** The viewer's borrowing in this chama (members only; null before migration 0011). */
+  loans: LoanOffer | null;
   /** The chama's account inside Unitus. */
   account: {
     number: string;
     /** True when balances come from the double-entry ledger (migration 0006). */
     fromLedger: boolean;
     pot: number;
-    accounts: Pick<LedgerAccount, "number" | "name" | "kind" | "balance">[];
+    accounts: Pick<LedgerAccount, "number" | "name" | "kind" | "normal" | "balance">[];
     statement: StatementRow[];
   };
 };
@@ -158,6 +166,16 @@ async function loadLedger(chamaId: string, viewerId: string) {
     return { accounts, statement };
   } catch (error) {
     console.warn("[ledger] not available, falling back to payment totals:", (error as Error).message);
+    return null;
+  }
+}
+
+/** The viewer's loan offer, or null if loans aren't set up yet (migration 0011). */
+async function loadLoans(chamaId: string, memberId: string) {
+  try {
+    return await getLoanOffer(chamaId, memberId);
+  } catch (error) {
+    console.warn("[loans] not available:", (error as Error).message);
     return null;
   }
 }
@@ -227,21 +245,23 @@ export async function getChamaDashboard(chamaId: string, memberId: string, now =
   // Only the chama's admin and its members can see its records.
   if (!isAdmin && !isMember) return null;
 
-  const [paymentRows, roundRows, books] = await Promise.all([
+  const [paymentRows, roundRows, books, loans] = await Promise.all([
     db()
       .from("payments")
-      .select("member_id, kind, reference, paypal_order_id, paypal_capture_id, amount, principal, contribution, fee_charged, paypal_fee, net_amount, status, created_at")
+      .select("member_id, kind, reference, paypal_order_id, paypal_capture_id, amount, principal, contribution, loan_repayment, fee_charged, paypal_fee, net_amount, status, created_at")
       .eq("chama_id", chamaId)
       .in("status", SETTLED)
       .order("created_at", { ascending: false }),
     listRounds(chamaId),
     loadLedger(chamaId, memberId),
+    isMember ? loadLoans(chamaId, memberId) : null,
   ]);
   const payments = (check(paymentRows) as PaymentRow[]).map((p) => ({
     ...p,
     amount: Number(p.amount),
     principal: Number(p.principal ?? p.amount),
     contribution: p.kind === "monthly_deduction" ? Number(p.contribution ?? Math.min(Number(chama.monthly_contribution), Number(p.principal))) : 0,
+    loan_repayment: Number(p.loan_repayment ?? 0),
     fee_charged: Number(p.fee_charged ?? 0),
     paypal_fee: p.paypal_fee === null ? null : Number(p.paypal_fee),
     net_amount: p.net_amount === null ? null : Number(p.net_amount),
@@ -250,6 +270,8 @@ export async function getChamaDashboard(chamaId: string, memberId: string, now =
   const names = new Map(memberships.map((m) => [m.member_id, m.members?.full_name ?? "Member"]));
   const completed = payments.filter((p) => p.status === "COMPLETED");
   const deductions = completed.filter((p) => p.kind === "monthly_deduction");
+  // What a round payment put into savings: the rest is contribution and loan repayment.
+  const savedIn = (p: { principal: number; contribution: number; loan_repayment: number }) => p.principal - p.contribution - p.loan_repayment;
   const contribution = Number(chama.monthly_contribution);
   const savingsPerRound = Number(chama.monthly_savings);
 
@@ -268,8 +290,9 @@ export async function getChamaDashboard(chamaId: string, memberId: string, now =
     const theirs = completed.filter((p) => p.member_id === m.member_id);
     const fee = theirs.filter((p) => p.kind === "joining_fee").reduce((sum, p) => sum + p.principal, 0);
     const contributed = mine.reduce((s, p) => s + p.contribution, 0);
-    const saved = mine.reduce((s, p) => s + p.principal - p.contribution, 0);
-    const ledgerBalance = books?.accounts.filter((a) => a.member_id === m.member_id).reduce((sum, a) => sum + a.balance, 0);
+    const saved = mine.reduce((s, p) => s + savedIn(p), 0);
+    // Their savings and joining fee; a loan they owe is shown separately.
+    const ledgerBalance = books?.accounts.filter((a) => a.member_id === m.member_id && a.normal === "credit").reduce((sum, a) => sum + a.balance, 0);
     return {
       name: names.get(m.member_id) ?? "Member",
       isYou: m.member_id === memberId,
@@ -280,6 +303,7 @@ export async function getChamaDashboard(chamaId: string, memberId: string, now =
       autoPay: ready.has(m.member_id),
       potReceived: round2(roundRows.filter((r) => r.recipient_id === m.member_id && r.status === "paid").reduce((s, r) => s + Number(r.pot ?? 0), 0)),
       rounds: mine.length,
+      savingRounds: mine.filter((p) => savedIn(p) > 0).length,
       contributed: round2(contributed),
       savings: round2(saved),
       balance: round2(ledgerBalance ?? fee + saved),
@@ -324,14 +348,14 @@ export async function getChamaDashboard(chamaId: string, memberId: string, now =
   const pool = {
     joiningFees: round2(fees.reduce((s, p) => s + p.principal, 0)),
     contributions: round2(deductions.reduce((s, p) => s + p.contribution, 0)),
-    savings: round2(deductions.reduce((s, p) => s + p.principal - p.contribution, 0)),
+    savings: round2(deductions.reduce((s, p) => s + savedIn(p), 0)),
     payouts: round2(payouts),
     feesCharged: round2(completed.reduce((s, p) => s + p.fee_charged, 0)),
     paypalFees: round2(completed.reduce((s, p) => s + (p.paypal_fee ?? 0), 0)),
     balance: round2(completed.reduce((s, p) => s + (p.net_amount ?? p.principal), 0) - payouts),
   };
   // With the ledger, the chama's balance is what its Unitus accounts hold.
-  if (books) pool.balance = round2(books.accounts.reduce((sum, a) => sum + a.balance, 0));
+  if (books) pool.balance = heldBalance(books.accounts);
 
   // Money in per round, for analytics.
   const byRound = new Map<string, MonthlyRow>();
@@ -341,7 +365,7 @@ export async function getChamaDashboard(chamaId: string, memberId: string, now =
     if (p.kind === "joining_fee") row.joiningFees += p.principal;
     if (p.kind === "monthly_deduction") {
       row.contributions += p.contribution;
-      row.savings += p.principal - p.contribution;
+      row.savings += savedIn(p);
     }
     byRound.set(label, row);
   }
@@ -385,6 +409,8 @@ export async function getChamaDashboard(chamaId: string, memberId: string, now =
   // The next rounds, from when the next one is due.
   const due = chama.status === "closed" ? null : nextRoundDue(chama, roundRows, now);
   const charge = withFee(contribution + savingsPerRound);
+  const loanRepayment = loans?.loan?.nextInstalment ?? 0;
+  const myCharge = withFee(contribution + savingsPerRound + loanRepayment);
   const nextNumber = (last?.number ?? 0) + 1;
   const next = due
     ? {
@@ -393,8 +419,9 @@ export async function getChamaDashboard(chamaId: string, memberId: string, now =
         waiting: active.length < MIN_MEMBERS_TO_RUN,
         contribution,
         savings: savingsPerRound,
-        fee: charge.fee,
-        total: charge.total,
+        loanRepayment,
+        fee: myCharge.fee,
+        total: myCharge.total,
       }
     : null;
   const schedule: ScheduleRow[] = due
@@ -428,11 +455,12 @@ export async function getChamaDashboard(chamaId: string, memberId: string, now =
     pool,
     you,
     next,
+    loans,
     account: {
       number: chamaAccountNumber(chama.invite_code),
       fromLedger: Boolean(books),
       pot: books?.accounts.find((a) => a.kind === "chama_pot")?.balance ?? pool.contributions - pool.payouts,
-      accounts: (books?.accounts ?? []).map(({ number, name, kind, balance }) => ({ number, name, kind, balance })),
+      accounts: (books?.accounts ?? []).map(({ number, name, kind, normal, balance }) => ({ number, name, kind, normal, balance })),
       statement: books?.statement ?? [],
     },
   };

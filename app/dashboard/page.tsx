@@ -13,11 +13,13 @@ import { LedgerGrid, MembersGrid, RoundsGrid, ScheduleGrid, StatementGrid } from
 import { ChamaRules } from "@/components/dashboard/chama-rules";
 import { LeaveChama } from "@/components/dashboard/leave-chama";
 import { LiveRefresh } from "@/components/dashboard/live-refresh";
+import { LoanCard } from "@/components/dashboard/loan-card";
 import { MyChamas } from "@/components/dashboard/my-chamas";
 import { getSession } from "@/lib/auth/session";
 import { PAYPAL_ACCOUNT_URL } from "@/lib/paypal/server";
 import { money } from "@/lib/chama";
 import { getChamaDashboard, listDashboardChamas, type PotsWon } from "@/lib/dashboard";
+import { LOAN_INSTALMENT_CHOICES, LOAN_MIN_SAVING_ROUNDS, LOAN_STEP_PERCENT } from "@/lib/loans";
 import { FREQUENCIES, formatDue } from "@/lib/schedule";
 import { cn } from "@/lib/utils";
 
@@ -102,7 +104,7 @@ async function Dashboard({ searchParams }: { searchParams: PageProps<"/dashboard
   const d = await getChamaDashboard(selected.id, session.memberId);
   if (!d) redirect("/dashboard");
 
-  const { chama, you, pool, cycle, next, members, frequency } = d;
+  const { chama, you, pool, cycle, next, members, frequency, loans } = d;
   const isAdmin = d.role === "admin";
   const started = d.rounds.length > 0;
   const lastRound = d.rounds[0];
@@ -128,6 +130,7 @@ async function Dashboard({ searchParams }: { searchParams: PageProps<"/dashboard
             joiningFee={you.lockedJoiningFee}
             drawsRemaining={drawsRemaining}
             cycleEnd={`the end of cycle ${cycle.number}`}
+            loanBalance={loans?.loan?.balance ?? 0}
           />
         )}
       </div>
@@ -181,7 +184,7 @@ async function Dashboard({ searchParams }: { searchParams: PageProps<"/dashboard
 
       {you && you.pots.wins.length > 0 && <PotBanner pots={you.pots} when={when} />}
 
-      <section className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
+      <section className={cn("grid gap-4 sm:grid-cols-2", isAdmin ? "xl:grid-cols-4" : "lg:grid-cols-3")}>
         {isAdmin ? (
           <>
             <Stat icon={UsersIcon} label="Members" value={`${members.length} of ${chama.member_limit}`}>
@@ -262,8 +265,9 @@ async function Dashboard({ searchParams }: { searchParams: PageProps<"/dashboard
             {next && you?.feePaid && (
               <>
                 <p className="text-xs text-band-foreground/70">
-                  {money(next.contribution)} contribution · {money(next.savings)} savings · {money(next.fee)} PayPal fee. You pay this even when
-                  you&apos;re drawn, and your contribution comes back to you in the pot.
+                  {money(next.contribution)} contribution · {money(next.savings)} savings ·{" "}
+                  {next.loanRepayment > 0 ? `${money(next.loanRepayment)} loan repayment · ` : ""}
+                  {money(next.fee)} PayPal fee. You pay this even when you&apos;re drawn, and your contribution comes back to you in the pot.
                 </p>
                 <p className="rounded-xl bg-band-foreground/10 px-3 py-2 text-xs text-band-foreground/90">
                   Make sure {money(next.total)} is available in your PayPal by {when(next.date)}.{" "}
@@ -274,6 +278,26 @@ async function Dashboard({ searchParams }: { searchParams: PageProps<"/dashboard
               </>
             )}
           </Stat>
+        )}
+
+        {!isAdmin && you?.feePaid && loans && (
+          <LoanCard
+            chamaId={chama.id}
+            chamaName={chama.name}
+            interestRate={Number(chama.loan_interest_rate)}
+            minSavingRounds={LOAN_MIN_SAVING_ROUNDS}
+            limitPercent={loans.limitPercent}
+            stepPercent={LOAN_STEP_PERCENT}
+            instalmentChoices={LOAN_INSTALMENT_CHOICES}
+            savingRounds={loans.savingRounds}
+            skippedRounds={loans.skippedRounds}
+            goodLoans={loans.goodLoans}
+            loanElsewhere={loans.loanElsewhere}
+            savings={loans.savings}
+            limit={loans.limit}
+            available={loans.available}
+            loan={loans.loan}
+          />
         )}
       </section>
 
@@ -286,7 +310,7 @@ async function Dashboard({ searchParams }: { searchParams: PageProps<"/dashboard
           memberCount: cycle.members,
           membersPaidOut: cycle.received,
           savingsHeld: pool.joiningFees + pool.savings,
-          loansOutstanding: 0,
+          loansOutstanding: d.account.accounts.filter((a) => a.kind === "member_loan").reduce((s, a) => s + a.balance, 0),
           pendingDeductions: started ? d.activeMembers - paidLastRound : 0,
         }}
       />

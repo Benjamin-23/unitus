@@ -148,21 +148,29 @@ export async function captureOrder(orderId: string) {
 
 /**
  * Charges a member's share of one round to their saved PayPal: the
- * contribution (to that round's recipient) and/or savings, plus the PayPal fee.
+ * contribution (to that round's recipient), savings and any loan instalment,
+ * plus the PayPal fee.
  * No buyer approval: the member agreed when they saved their PayPal.
  *
  * The PayPal-Request-Id is fixed per round and member, so a scheduler re-run or
  * network retry is the same payment to PayPal and can never charge twice.
  */
-// TODO(backend): add loan instalments once loans are stored in the database.
 export async function chargeRoundDeduction(
   vaultId: string,
   chama: { id: string; name: string },
-  { memberId, roundId, label, contribution, savings }: { memberId: string; roundId: string; label: string; contribution: number; savings: number },
+  {
+    memberId,
+    roundId,
+    label,
+    contribution,
+    savings,
+    loanRepayment = 0,
+  }: { memberId: string; roundId: string; label: string; contribution: number; savings: number; loanRepayment?: number },
 ) {
   const { unit: purchaseUnit, charge } = chamaUnit(`round-${roundId}`.slice(0, 256), `${chama.id}:round:${roundId}`, `${chama.name} · ${label}`, [
     { name: "Merry-go-round contribution", amount: contribution },
     { name: "Savings", amount: savings },
+    { name: "Loan repayment", amount: loanRepayment },
   ]);
   const order = await paypalRequest<Order>("/v2/checkout/orders", {
     requestId: `deduction-${roundId}-${memberId}`,
