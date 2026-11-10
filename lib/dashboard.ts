@@ -1,4 +1,5 @@
 // Server-only: everything the dashboard and analytics show, built from Supabase.
+import { interestCollected, splitByRatio } from "@/lib/chama";
 import type { ChamaRow } from "@/lib/chamas";
 import { db } from "@/lib/db";
 import { withFee } from "@/lib/fees";
@@ -62,6 +63,10 @@ export type MemberRow = {
   savings: number;
   /** Joining fee + savings: what's theirs in the pool. */
   balance: number;
+  /** Their savings ÷ all members' savings: their ratio of the loan interest. */
+  shareRatio: number;
+  /** Their share of the loan interest collected so far, paid with their savings at share-out. */
+  interestShare: number;
   feesPaid: number;
   /** ISO code from PayPal (e.g. KE), or null until they've paid. */
   countryCode: string | null;
@@ -124,6 +129,10 @@ export type ChamaDashboard = {
     received: number;
     feePaid: boolean;
     autoPay: boolean;
+    shareRatio: number;
+    interestShare: number;
+    /** Savings + interest share: what they'd receive at share-out today. */
+    shareOut: number;
     /** Pots won: paid to your PayPal, and on the way. */
     pots: {
       paid: number;
@@ -145,6 +154,17 @@ export type ChamaDashboard = {
   } | null;
   /** The viewer's borrowing in this chama (members only; null before migration 0011). */
   loans: LoanOffer | null;
+  /** Loan interest, shared out with the savings by each member's ratio (null before migration 0011). */
+  interest: {
+    /** Interest on every loan taken in this chama. */
+    earned: number;
+    /** Interest already repaid: what's shared out. */
+    collected: number;
+    /** Interest still owed on open loans, held back until it's repaid. */
+    owed: number;
+    /** All members' savings: the base of each member's ratio. */
+    totalSavings: number;
+  } | null;
   /** The chama's account inside Unitus. */
   account: {
     number: string;
@@ -168,6 +188,20 @@ async function loadLedger(chamaId: string, viewerId: string) {
     console.warn("[ledger] not available, falling back to payment totals:", (error as Error).message);
     return null;
   }
+}
+
+/** Every loan in the chama (any member), or null if loans aren't set up yet (migration 0011). */
+async function loadChamaLoans(chamaId: string) {
+  const { data, error } = await db().from("loans").select("interest, total, repaid").eq("chama_id", chamaId);
+  if (error) {
+    console.warn("[loans] not available:", error.message);
+    return null;
+  }
+  return (data as { interest: number; total: number; repaid: number }[]).map((l) => ({
+    interest: Number(l.interest),
+    total: Number(l.total),
+    repaid: Number(l.repaid),
+  }));
 }
 
 /** The viewer's loan offer, or null if loans aren't set up yet (migration 0011). */
@@ -245,7 +279,7 @@ export async function getChamaDashboard(chamaId: string, memberId: string, now =
   // Only the chama's admin and its members can see its records.
   if (!isAdmin && !isMember) return null;
 
-  const [paymentRows, roundRows, books, loans] = await Promise.all([
+  const [paymentRows, roundRows, books, loans, chamaLoans] = await Promise.all([
     db()
       .from("payments")
       .select("member_id, kind, reference, paypal_order_id, paypal_capture_id, amount, principal, contribution, loan_repayment, fee_charged, paypal_fee, net_amount, status, created_at")
@@ -255,6 +289,7 @@ export async function getChamaDashboard(chamaId: string, memberId: string, now =
     listRounds(chamaId),
     loadLedger(chamaId, memberId),
     isMember ? loadLoans(chamaId, memberId) : null,
+    loadChamaLoans(chamaId),
   ]);
   const payments = (check(paymentRows) as PaymentRow[]).map((p) => ({
     ...p,
@@ -285,7 +320,7 @@ export async function getChamaDashboard(chamaId: string, memberId: string, now =
   const active = memberships.filter((m) => m.joining_fee_paid_at && ready.has(m.member_id));
   const lastRoundLabel = last ? `Round ${last.number}` : null;
 
-  const members: MemberRow[] = memberships.map((m) => {
+  const membersBeforeShare = memberships.map((m) => {
     const mine = deductions.filter((p) => p.member_id === m.member_id);
     const theirs = completed.filter((p) => p.member_id === m.member_id);
     const fee = theirs.filter((p) => p.kind === "joining_fee").reduce((sum, p) => sum + p.principal, 0);
@@ -307,11 +342,28 @@ export async function getChamaDashboard(chamaId: string, memberId: string, now =
       contributed: round2(contributed),
       savings: round2(saved),
       balance: round2(ledgerBalance ?? fee + saved),
+      shareRatio: 0,
+      interestShare: 0,
       feesPaid: round2(theirs.reduce((sum, p) => sum + p.fee_charged, 0)),
       countryCode: m.members?.country ?? null,
       country: countryName(m.members?.country),
     };
   });
+
+  // Loan interest is shared by each member's ratio of the savings paid in. Only
+  // interest already repaid is shared; what's still owed waits until it's in.
+  const interest = chamaLoans
+    ? (() => {
+        const earned = round2(chamaLoans.reduce((s, l) => s + l.interest, 0));
+        const collected = round2(chamaLoans.reduce((s, l) => s + interestCollected(l), 0));
+        return { earned, collected, owed: round2(earned - collected), totalSavings: round2(membersBeforeShare.reduce((s, m) => s + m.savings, 0)) };
+      })()
+    : null;
+  const members: MemberRow[] = splitByRatio(membersBeforeShare, interest?.collected ?? 0).map(({ ratio, share, ...m }) => ({
+    ...m,
+    shareRatio: ratio,
+    interestShare: share,
+  }));
 
   const rounds: RoundView[] = roundRows
     .map((r) => ({
@@ -403,6 +455,9 @@ export async function getChamaDashboard(chamaId: string, memberId: string, now =
         })(),
         feePaid: meRow.feePaid,
         autoPay: meRow.autoPay,
+        shareRatio: meRow.shareRatio,
+        interestShare: meRow.interestShare,
+        shareOut: round2(meRow.savings + meRow.interestShare),
       }
     : null;
 
@@ -456,6 +511,7 @@ export async function getChamaDashboard(chamaId: string, memberId: string, now =
     you,
     next,
     loans,
+    interest,
     account: {
       number: chamaAccountNumber(chama.invite_code),
       fromLedger: Boolean(books),

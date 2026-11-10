@@ -138,6 +138,22 @@ const memberCols: ColDef<MemberRow>[] = [
   { field: "contributed", headerName: "Contributed", valueFormatter: fmtMoney, type: "rightAligned", maxWidth: 150 },
   { field: "savings", headerName: "Savings", valueFormatter: fmtMoney, type: "rightAligned", maxWidth: 140 },
   {
+    field: "shareRatio",
+    headerName: "Interest ratio",
+    headerTooltip: "Their savings ÷ all members' savings",
+    type: "rightAligned",
+    maxWidth: 150,
+    valueFormatter: (p) => `${((p.value ?? 0) * 100).toFixed(1)}%`,
+  },
+  {
+    field: "interestShare",
+    headerName: "Interest share",
+    headerTooltip: "Their share of the loan interest collected so far, paid out with their savings",
+    valueFormatter: fmtMoney,
+    type: "rightAligned",
+    maxWidth: 150,
+  },
+  {
     field: "balance",
     headerName: "Balance",
     type: "rightAligned",
