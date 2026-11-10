@@ -65,6 +65,34 @@ export function loanBalance(loan: Loan | null) {
   return Math.max(0, loanTotal(loan) - loanInstalment(loan) * loan.instalmentsPaid);
 }
 
+/**
+ * Interest a loan has actually brought in. Each repayment is part principal,
+ * part interest in the loan's own proportion, so interest still owed on an open
+ * loan isn't counted (it's deducted until it's repaid).
+ */
+export function interestCollected(loan: { interest: number; total: number; repaid: number }) {
+  if (loan.total <= 0) return 0;
+  return Math.round(loan.interest * Math.min(1, loan.repaid / loan.total) * 100) / 100;
+}
+
+/**
+ * Splits `pool` between members by the ratio of what each paid in (their
+ * savings), to the cent. Leftover cents go to the largest remainders so the
+ * shares always add up to the pool.
+ */
+export function splitByRatio<T extends { savings: number }>(members: T[], pool: number) {
+  const total = members.reduce((s, m) => s + Math.max(0, m.savings), 0);
+  const cents = Math.round(pool * 100);
+  const exact = members.map((m) => (total > 0 ? (Math.max(0, m.savings) / total) * cents : 0));
+  const shares = exact.map(Math.floor);
+  let left = total > 0 ? cents - shares.reduce((s, c) => s + c, 0) : 0;
+  for (const i of exact.map((e, i) => [e - Math.floor(e), i]).sort((a, b) => b[0] - a[0]).map(([, i]) => i)) {
+    if (left-- <= 0) break;
+    shares[i] += 1;
+  }
+  return members.map((m, i) => ({ ...m, ratio: total > 0 ? Math.max(0, m.savings) / total : 0, share: shares[i] / 100 }));
+}
+
 /** Savings count towards the loan limit, including the locked joining fee. */
 export function loanLimit(group: Group, account: MemberAccount) {
   const limit = (account.savings + account.lockedJoiningFee) * group.loanMultiplier;
